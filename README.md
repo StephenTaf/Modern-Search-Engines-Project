@@ -1,4 +1,4 @@
-# 🌐 INFO 4271 - Tübingen Search Engine Project
+# 🌐 Tübingen Search Engine Project
 
 Welcome! This repository contains the collaborative work of our team for the **INFO 4271 Group Project** at the University of Tübingen.
 
@@ -16,7 +16,7 @@ This project is divided into the following components:
 
 ## 👥 Team Members
 
-- [Your Name] – Search Result Presentation
+- [Stephen Tafferner] – Search Result Presentation
 - [Partner 1 Name] – Crawling
 - [Partner 2 Name] – Indexing
 - [Partner 3 Name] – Query Processing
