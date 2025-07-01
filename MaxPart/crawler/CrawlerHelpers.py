@@ -203,14 +203,15 @@ def moveAndDel(domain, counter):
     del responseHttpCodes[domain]
     
     
-#######################
-# CONTINUE HERE LATER
-def exponentialDelay(delay, name, domain):
+#####################
+# multiplies the delay time by 2, bounded by 3600 s (1 hour)
+def exponentialDelay(delay, domain):
     d= delay
     if delay > 3600:
         d = 3600
     else:
         d = delay*2
+    
     urlFrontier[domain]["crawl-delay"]
     
         
@@ -262,149 +263,22 @@ def handleResponse(url):
     
     
     
-def errorDomain(domain, responseHeaders, delay):
-    code = responseHeaders["status_code"]
-    weight = 0
-    
-    # ToDo: Change Value (use delay- function!)
-    retry_delay = retry(responseHeaders)
-    
 
+            
+        
     
-    if domain not in responseHttpCodes:
-         responseHttpCodes[domain]["counters"] = {str(code): 0}
-         responseHttpCodes[domain]["timeData"] = [time.time()]
-         responseHttpCodes[domain]["statusData"] = [code]
+        
+    
+        
+        
+    
          
-    else:
-         responseHttpCodes[domain]["counters"] [str(code)] +=1
-         
-    counter = responseHttpCodes[domain]["counters"] [str(code)]
-    
-  
-    
-    if code == 400:
-        if counter == 3:
-            moveAndDel(domain, True)
-        else:
-            urlFrontier[domain]["crawl-delay"] = exponentialDelay(delay)
-        weight = 1
-    
-    
-    if 401 < code < 500 and code != 429:
-        if counter == 2:
-            moveAndDel(domain, True)
-        else:
-            urlFrontier[domain]["crawl-delay"] = exponentialDelay(delay)
-            weight = 1.5
-        
-    if code == 429: 
-        if (retry_delay != None):
-            urlFrontier[domain]["delay"] == retry_delay
-        else:
-            urlFrontier[domain]["delay"] = exponentialDelay(delay)
-        
-        if counter == 10:
-            moveAndDel(domain, True)
-            
-    if 499 < code < 507 or code == 599:
-        if code == 503 and retry_delay != None:
-            urlFrontier[domain]["delay"] == retry_delay
-            
-        else:
-             urlFrontier[domain]["delay"] = exponentialDelay(delay) 
-        
-        if counter == 5:
-            moveAndDel(domain, True)
-            
-        if 506 < code < 510:
-         urlFrontier[domain]["delay"] = 3600
-         # CONTINUE HERE LATER
              
             
         
         
         
-        # Bad Request: Malformed request syntax, headers, or payload.
-        # Crawler behavior: Log/inspect; fix client. After ≥3 identical 400s, back off, rotate, then retry.
-        pass
-
-    elif code == 401:
-        # Unauthorized: Authentication required or credentials invalid/expired.
-        # Crawler behavior: Re-authenticate and retry if possible; else mark URL protected and skip.
-        pass
-
-    elif code == 403:#
-        # Forbidden: Explicit denial of access.
-        # Crawler behavior: Immediately back off or rotate; after 1–2 in a row, blacklist URL/domain.
-        pass
-
-    elif code == 404:#<-- 1
-        # Not Found: Resource does not exist.
-        # Crawler behavior: Mark URL as dead and stop retrying.
-        pass
-
-    elif code == 406:#<-- 1
-        # Not Acceptable: Accept header doesn’t match any available representation.
-        # Crawler behavior: Broaden Accept header and retry once; if still 406, back off or skip.
-        pass
-
-    elif code == 410: #<--1
-        # Gone: Resource has been permanently removed.
-        # Crawler behavior: Treat like 404 but don’t revisit; remove URL from queue.
-        pass
-
-    elif code == 429: #<-- 10
-        # Too Many Requests: Rate limit exceeded.
-        # Crawler behavior: Honor Retry-After header; wait that long, then resume. Lower crawl rate.
-        pass
-
-    elif code == 431: #<--1
-        # Request Header Fields Too Large: Headers exceed server’s size limits.
-        # Crawler behavior: Trim/remove unnecessary headers and retry; if persists, back off/rotate.
-        pass
-
-    elif code == 451: #<--1
-        # Unavailable For Legal Reasons: Blocked due to legal or copyright issues.
-        # Crawler behavior: Skip the URL and do not retry.
-        pass
-
-    elif code == 500:#<-- 5
-        # Internal Server Error: Generic server-side failure.
-        # Crawler behavior: Retry with exponential back-off up to ~5 times; then domain-wide back-off.
-        pass
-
-    elif code == 502:#<-- 5
-        # Bad Gateway: Upstream server error or proxy failure.
-        # Crawler behavior: Treat like 500: retry with exponential back-off.
-        pass
-
-    elif code == 503: #<-- 5
-        # Service Unavailable: Server overloaded or down for maintenance.
-        # Crawler behavior: Respect Retry-After header; otherwise exponential back-off before retrying.
-        pass
-
-    elif code == 504: #<-- 5
-        # Gateway Timeout: Upstream server timed out.
-        # Crawler behavior: Treat like 500: retry with exponential back-off.
-        pass
-
-    elif code == 507: #<--6
-        # Insufficient Storage: Server cannot store the representation needed.
-        # Crawler behavior: Pause domain requests for an interval (e.g. hours), then retry later.
-        pass
-
-    elif code == 509: #<-- 6
-        # Bandwidth Limit Exceeded (non-standard): Site exceeded bandwidth allocation.
-        # Crawler behavior: Pause domain-wide crawling until you suspect the cap has reset.
-        pass
-
-    elif code == 599: #<--5
-        # Network Connect Timeout Error: Network-level timeout at CDN or proxy.
-        # Crawler behavior: Retry with exponential back-off; if persistent, treat as domain-level outage.
-        pass
-
-
+      
 
     # different kinds of errors are weighted with different severity
     # if code == "301":
@@ -439,91 +313,7 @@ def errorDomain(domain, responseHeaders, delay):
     #     # Crawler behavior: Serve from cache; do not re-download the body.
     #     pass
 
-    elif code == "400":
-        # Bad Request: Malformed request syntax, headers, or payload.
-        # Crawler behavior: Log/inspect; fix client. After ≥3 identical 400s, back off, rotate, then retry.
-        pass
-
-    elif code == "401":
-        # Unauthorized: Authentication required or credentials invalid/expired.
-        # Crawler behavior: Re-authenticate and retry if possible; else mark URL protected and skip.
-        pass
-
-    elif code == "403":
-        # Forbidden: Explicit denial of access.
-        # Crawler behavior: Immediately back off or rotate; after 1–2 in a row, blacklist URL/domain.
-        pass
-
-    elif code == "404":
-        # Not Found: Resource does not exist.
-        # Crawler behavior: Mark URL as dead and stop retrying.
-        pass
-
-    elif code == "406":
-        # Not Acceptable: Accept header doesn’t match any available representation.
-        # Crawler behavior: Broaden Accept header and retry once; if still 406, back off or skip.
-        pass
-
-    elif code == "410":
-        # Gone: Resource has been permanently removed.
-        # Crawler behavior: Treat like 404 but don’t revisit; remove URL from queue.
-        pass
-
-    elif code == "429":
-        # Too Many Requests: Rate limit exceeded.
-        # Crawler behavior: Honor Retry-After header; wait that long, then resume. Lower crawl rate.
-        pass
-
-    elif code == "431":
-        # Request Header Fields Too Large: Headers exceed server’s size limits.
-        # Crawler behavior: Trim/remove unnecessary headers and retry; if persists, back off/rotate.
-        pass
-
-    elif code == "451":
-        # Unavailable For Legal Reasons: Blocked due to legal or copyright issues.
-        # Crawler behavior: Skip the URL and do not retry.
-        pass
-
-    elif code == "500":
-        # Internal Server Error: Generic server-side failure.
-        # Crawler behavior: Retry with exponential back-off up to ~5 times; then domain-wide back-off.
-        pass
-
-    elif code == "502":
-        # Bad Gateway: Upstream server error or proxy failure.
-        # Crawler behavior: Treat like 500: retry with exponential back-off.
-        pass
-
-    elif code == "503":
-        # Service Unavailable: Server overloaded or down for maintenance.
-        # Crawler behavior: Respect Retry-After header; otherwise exponential back-off before retrying.
-        pass
-
-    elif code == "504":
-        # Gateway Timeout: Upstream server timed out.
-        # Crawler behavior: Treat like 500: retry with exponential back-off.
-        pass
-
-    elif code == "507":
-        # Insufficient Storage: Server cannot store the representation needed.
-        # Crawler behavior: Pause domain requests for an interval (e.g. hours), then retry later.
-        pass
-
-    elif code == "509":
-        # Bandwidth Limit Exceeded (non-standard): Site exceeded bandwidth allocation.
-        # Crawler behavior: Pause domain-wide crawling until you suspect the cap has reset.
-        pass
-
-    elif code == "599":
-        # Network Connect Timeout Error: Network-level timeout at CDN or proxy.
-        # Crawler behavior: Retry with exponential back-off; if persistent, treat as domain-level outage.
-        pass
-
-    
-            
-
-    
-    
+   
     
     
     
@@ -546,6 +336,8 @@ def UTEMA(nameOfField,value, dict):
     t = time.time()
     beta = 1/5
     if nameOfField not in dict:
+        dict[nameOfField] = None
+    if "S_last" not in dict[nameOfField] :
         # this will be the final weighted the average A after inclusion of the current data point
         A = 0
         # these are the Values for S and N in case t = t_0
@@ -553,7 +345,6 @@ def UTEMA(nameOfField,value, dict):
         N = 1 
         # --- measures time since a certain arbitrary point,at some moment somewhen before the start of the program
         # --- time is measured in seconds
-        dict[nameOfField] = {}
         dict[nameOfField]["S_last"] = S
         dict[nameOfField]["N_last"] = N
         dict[nameOfField]["t_last"] = t
@@ -637,6 +428,105 @@ def testData(a):
 #print(responseTimes["test"]["S_last"] / responseTimes["test"]["N_last"])
 #randomDelays = np.array(randomDelays)
 # print(np.mean(randomDelays))
+
+def errorDomain(domain, responseHeaders, delay):
+    code = responseHeaders["status_code"]
+    weight = 0
+    
+    # ToDo: Change Value (use delay- function!)
+    retry_delay = retry(responseHeaders)
+    
+
+    
+    if domain not in responseHttpCodes:
+         responseHttpCodes[domain] = {"counters": {}}
+         responseHttpCodes[domain]["timeData"] = [time.time()]
+         
+    if str(code) not in responseHttpCodes[domain]["counters"]:
+        responseHttpCodes[domain]["counters"] = {str(code): 0}
+         
+    responseHttpCodes[domain]["counters"] [str(code)] +=1
+         
+    counter = responseHttpCodes[domain]["counters"] [str(code)]
+    
+  
+    
+    if code == 400:
+        if counter == 3:
+            moveAndDel(domain, True)
+        else:
+            exponentialDelay(delay, domain)
+        weight = 1
+    
+    
+    if 400 < code < 500 and code != 429:
+        if counter == 2:
+            moveAndDel(domain, True)
+        else:
+            exponentialDelay(delay, domain)
+            weight = 1.5
+        
+    if code == 429: 
+        if (retry_delay != None):
+            urlFrontier[domain]["crawl-delay"] == retry_delay
+        else:
+            exponentialDelay(delay, domain)
+        
+        if counter == 10:
+            moveAndDel(domain, True)
+            
+    if 499 < code < 507 or code == 599:
+        if code == 503 and retry_delay != None:
+            urlFrontier[domain]["crawl-delay"] == retry_delay
+            
+        else:
+             exponentialDelay(delay, domain) 
+        
+        if counter == 5:
+            moveAndDel(domain, True)
+            
+        weight = 0.6
+            
+    if 506 < code < 510:
+        if counter == 3:
+            moveAndDel(domain, True)
+            
+        else:
+            urlFrontier[domain]["crawl-delay"] = 3600
+            
+        weight = 0.1
+        
+    else:
+        if counter == 3:
+            moveAndDel(domain, True)
+        weight = 0.3
+    
+    if domain in responseHttpCodes:
+        
+        # max UTEMA - average (weighted average) of bad requests we
+        # accept = 0.15
+        if (UTEMA(domain, weight, responseHttpCodes) > 0.15 and responseHttpCodes[domain]["N_last"] >= 10):
+            moveAndDel(domain, False)
+            
+    
+            
+#test errorDomain
+urlFrontier['test'] = {}
+urlFrontier['test']["crawl-delay"] = 1
+errorDomain("test", {"status_code": 401, "retry-after":"4"}, 2)
+errorDomain("test", {"status_code": 400, "retry-after":"4"}, 1)
+print(f"----------------------------")
+print(f"discontinuedDomains[test] = {"test" in discontinuedDomains}")
+#print(f"discontinuedDomains[test] = {discontinuedDomains['test']}")
+# 
+# print(f"responseHTTPCodes[test] = {responseHttpCodes['test']}")
+# print(f"urlFrontier[test] = {urlFrontier['test']}")
+# errorDomain("test", {"status_code": 401, "retry-after":"4"}, 3)
+# print(f"----------------------------")
+# print(f"discontinuedDomains[test] = {discontinuedDomains['test']}")
+# print(f"responseHTTPCodes[test] = {responseHttpCodes['test']}")
+# print(f"urlFrontier[test] = {urlFrontier['test']}")
+
            
 
     
