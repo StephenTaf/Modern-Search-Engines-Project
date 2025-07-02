@@ -5,10 +5,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import math
 import copy
-import ntplib
+import re
 from datetime import datetime, timezone
 from dateutil.parser import parse
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 ###############################################
 # only for testing
@@ -24,9 +24,9 @@ headers = {
     "Connection": "keep-alive"
 }
 
-url = "https://www.yale.edu/robots.txt"
+url = "https://www.yale.edu"
 
-response = requests.get(url, headers=headers)
+# response = requests.get(url, headers=headers)
 
 
 # returns a dictionary of form {delay: <delay value>,explicitely allowed pages: <DictionaryOfPages> forbidden pages: <DictionaryOfPages>}}
@@ -37,7 +37,7 @@ response = requests.get(url, headers=headers)
 
 #counts the number of lines starting with Disallow (as it happens, the yale website only has one agent specified,
 # namely the general one):
-allowdCount = response.text.count("Disallow:")
+# allowdCount = response.text.count("Disallow:")
 #print(f"So many 'Allow''s are in the text {allowdCount}")
 
 ###############################################
@@ -55,6 +55,10 @@ responseTimes = {}
 # dictionary of discovered URLs which have not yet been crawled
 urlFrontier = {}
 
+#active redirection- paths, each entry is a list where a url follows
+# another url, if there was a direct redirect to it
+redirects = []
+
 
 # for the checking-if blocked
 ## this dictionary has the simple form <domain>: {<code>: [<time of response]}
@@ -71,22 +75,43 @@ discontinuedDomains = {}
 
 ## blocked URLS- tracking:
 ## entries are of the form: <httpCode> : {ur: dictionaryOfForm {<S_Last: <>, N_last: <>, t_last: <>}},
-discontinuedUrls = {}
+discontinued = {}
 
 
 #disallowed urls: urls where we are actually forbidden access to according to the robots.txt
 disallowed = {}
 
-
+#crawler Information
+crawlerInformation{"redirects":}
 
 
 
 ####### just for testing of UTEMA:
 randomDelays = []
 
+######## cache
+disallowedCache = []
+
+######################
+'
+def getDomain(url):
+    '''extracts the domain from a given url'''
+     # this extracts the domain- name from the url
+     domain = re.search("//[^/:]*", url).group()[2:]
+     return domain
+     
 
 
-
+################
+def notDisallowed(url):
+    ''' checks if url is in disallowedCache or in the disallowed SQL- file'''
+    domain = getDomain(url)
+    notDisallowedValue = False
+    
+    if domain in disallowedCache:
+        if domain["NotDisallowe"] == True:
+            
+        
 
 
 # adds a new item to an already lexicographically ordered list
@@ -103,7 +128,11 @@ def addItem(lst, item):
 
 
 
-def extractTheRobotsFile(text):
+def extractTheRobotsFile(url):
+    robotsTxtUrl = re.search(r"(http|https)://[^/]*", url).group() + "/robots.txt"
+    text = requests.get(robotsTxtUrl).text
+    
+    
     textList = text.splitlines()
     textList = [''.join(a.split()) for a in textList if a != '']
     textList = [a for a in textList if not a.startswith('#')]
@@ -189,12 +218,20 @@ def retry(headers):
 #####################
 # another small helper: is used  to move a domain from responseHttpCodes to dicontinuedDomains and delete it from the url frontier
 #  discontinuedDomains[domain] = copy.deepcopy(responseHttpCodes[domain])
-def moveAndDel(domain, counter):
+def moveAndDel(url, reason, domain_wide. data):
+    domain = getDomain(url)
     reason = "average"
-    if (counter):
-        reason = "counter"
+    if domain_wide:
+        discontinued[domain] = ({"reason:" reason, 
+            "data": copy.deepcopy(data)})
+    else:
+        discontinued[domain][url] = discontinued[domain] = ({"reason:" reason, 
+            "data": copy.deepcopy(data)})
+        
     
-    discontinuedDomains[domain] = copy.deepcopy(responseHttpCodes[domain])
+    
+    
+   
             
     # the reason- fields value either "average" or "counter"
     # depending on the reason, why the domain was discontinued
@@ -212,7 +249,7 @@ def exponentialDelay(delay, domain):
     else:
         d = delay*2
     
-    urlFrontier[domain]["crawl-delay"]
+    urlFrontier[domain]["crawl-delay"] += d
     
         
         
@@ -429,84 +466,106 @@ def testData(a):
 #randomDelays = np.array(randomDelays)
 # print(np.mean(randomDelays))
 
-def errorDomain(domain, responseHeaders, delay):
+def handleURL(url, responseHeaders, delay):
     code = responseHeaders["status_code"]
-    weight = 0
+    # for the question if it makes sense to disallow a whole domain
+    # we calculate a UTEMA- weighted average, that is what the sample- value is for
+    sample = 0.25
+    domain = getDomain(url)
+    domainValue = 0
+    # initialise this value like this,however
+    # note that in case the UTEMA weighted average is too big
+    # and that is the reason why we want to forbid this url, 
+    # it changes to "average"
+    reason = "counter"
     
     # ToDo: Change Value (use delay- function!)
     retry_delay = retry(responseHeaders)
     
 
-    
     if domain not in responseHttpCodes:
-         responseHttpCodes[domain] = {"counters": {}}
-         responseHttpCodes[domain]["timeData"] = [time.time()]
+         responseHttpCodes[domain] = {}
+    if url not in responseHttpCodes[domain]:
+         responseHttpCodes[domain][url] = {"counters": {}}
+         responseHttpCodes[domain][url]["timeData"] = [time.time()]
          
-    if str(code) not in responseHttpCodes[domain]["counters"]:
-        responseHttpCodes[domain]["counters"] = {str(code): 0}
+    if str(code) not in responseHttpCodes[domain][url]["counters"]:
+        responseHttpCodes[domain][url]["counters"] = {str(code): 0}
          
-    responseHttpCodes[domain]["counters"] [str(code)] +=1
+    responseHttpCodes[domain][url]["counters"] [str(code)] +=1
          
-    counter = responseHttpCodes[domain]["counters"] [str(code)]
+    counter = responseHttpCodes[domain][url]["counters"] [str(code)]
     
   
     
     if code == 400:
         if counter == 3:
-            moveAndDel(domain, True)
+            moveAndDel(url, reason, False)
+            
         else:
             exponentialDelay(delay, domain)
-        weight = 1
-    
-    
-    if 400 < code < 500 and code != 429:
-        if counter == 2:
-            moveAndDel(domain, True)
-        else:
-            exponentialDelay(delay, domain)
-            weight = 1.5
         
-    if code == 429: 
+    
+    
+    elif 400 < code < 500 and code != 429:
+        if counter == 2:
+             moveAndDel(url, reason, False)
+        else:
+            exponentialDelay(delay, domain)
+            
+        
+    elif code == 429: 
         if (retry_delay != None):
             urlFrontier[domain]["crawl-delay"] == retry_delay
+            
         else:
             exponentialDelay(delay, domain)
         
         if counter == 10:
-            moveAndDel(domain, True)
+            moveAndDel(url, reason, False)
+        sample = 0.5
             
-    if 499 < code < 507 or code == 599:
+    elif 499 < code < 507 or code == 599:
         if code == 503 and retry_delay != None:
             urlFrontier[domain]["crawl-delay"] == retry_delay
             
         else:
-             exponentialDelay(delay, domain) 
+            exponentialDelay(delay, domain) 
         
         if counter == 5:
-            moveAndDel(domain, True)
+             moveAndDel(url, reason, False)
             
-        weight = 0.6
+        sample = 1
             
-    if 506 < code < 510:
+    elif 506 < code < 510:
         if counter == 3:
-            moveAndDel(domain, True)
+             moveAndDel(url, reason, False)
             
         else:
-            urlFrontier[domain]["crawl-delay"] = 3600
+            urlFrontier[domain][url]["crawl-delay"] = 3600
             
-        weight = 0.1
+        sample = 0.75
         
     else:
         if counter == 3:
-            moveAndDel(domain, True)
-        weight = 0.3
+            moveAndDel(url, reason, False)
     
-    if domain in responseHttpCodes:
+    if url in responseHttpCodes[domain]:
         
         # max UTEMA - average (weighted average) of bad requests we
         # accept = 0.15
-        if (UTEMA(domain, weight, responseHttpCodes) > 0.15 and responseHttpCodes[domain]["N_last"] >= 10):
-            moveAndDel(domain, False)
+        if (UTEMA(domain, weight, responseHttpCodes) > 0. and responseHttpCodes[domain]["N_last"] >= 20):
+            reason = "average"
+            # in this case, we disallow the whole domain
+            moveAndDel(url, "average")
+            
+        
+            
+             
+
+             
+    responseHttpCodes
+
             
     
             
@@ -516,7 +575,7 @@ urlFrontier['test']["crawl-delay"] = 1
 errorDomain("test", {"status_code": 401, "retry-after":"4"}, 2)
 errorDomain("test", {"status_code": 400, "retry-after":"4"}, 1)
 print(f"----------------------------")
-print(f"discontinuedDomains[test] = {"test" in discontinuedDomains}")
+# print(f"discontinuedDomains[test] = {"test" in discontinuedDomains}")
 #print(f"discontinuedDomains[test] = {discontinuedDomains['test']}")
 # 
 # print(f"responseHTTPCodes[test] = {responseHttpCodes['test']}")
@@ -538,15 +597,87 @@ def delayTime(delay):
     crawler is allowed to crawl the domain '''
     pass
     
+###########################
+# filter the kind of urls we are interested in
+
+
+
+ 
+ def getBlocked(url)
+    
+ 
+ 
+def isUrlAllowed(url):
+    domain = getDomain(url)
+    if domain in discontinuedDomains:
+        
+        
+
+
+
+#------------
+def extractURLs(url):
+     response = requests(url)
+     html = response.txt
+     
+     url = "https://www.yale.edu"
+     
+     # this extracts the domain- name from the url
+     domain = re.search("//[^/:]*", url).group()[2:]
+     
+     
+     # for testing
+     s = " <a href = 'dsdjshklfsl' </a>"
+     
+     urls = re.findall(r'''<a\s*href\s*= [ ]*("\').*("\')[ ]*>.*</a>''', html)
+     urls = [re.search(r'''("|')[^ ]*("|')''', a).group()[1:-1] for a in urls or ]
+     full_urls = [urljoin(url, a) for a in urls]
+     
+     urls = [a for a in urls if a not in dicsontinuedUrls ]
+     
+     
+     
+     
+     
+     
+     
+     
+    
+     
+     parsed = urlparse(full_url)
+     parsed.scheme in ("http", "https")
+     
+     
+     
+     
+class crawler:
+    ''' This class defines what a crawler can do'''
+    
+    
+    urlFrontier = []
+     def __init__(self, name, redirects=0):
+        """
+        The __init__ method runs when you create a new instance.
+        `self` is the new object; you attach instance attributes to it.
+        """
+    self.NumberOfRedirects = 0
+    
+    
 
 
 # this function does the following: 
 # - first check if the url is english or not
-# - check if thecurl is related to tübingen (in order to determine this, it can make sense to consider the incoming link)
+# - check if the url is related to tübingen (in order to determine this, it can make sense to consider the incoming link)
 # in order to do this, it might also be of importance to know if it is the subdomain of an already crawled url
+
 
 def singleCrawler(url, IncomingLink):
     rules = extractTheRobotsFile(robotsTxtUrl(url))
+    
+    
+    
+    
+    
     
     return []
 
