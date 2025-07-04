@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from dateutil.parser import parse
 from urllib.parse import urljoin, urlparse
 
+
 ###############################################
 # only for testing
 headers = {
@@ -64,25 +65,30 @@ redirects = []
 ## this dictionary has the simple form <domain>: {<code>: [<time of response]}
 responseHttpCodes = {}
 
-## URLS which are discinued
-## we don't allow the crawler to access them
-discontinuedUrls = {}
 
-## domains which are discinued
-## we don't allow the crawler to access them
+
+## we don't allow the crawler to access them, as soon as len(discontinuedDomains)>1000
+# we store them
 discontinuedDomains = {}
 
 
+# these urls should get stored as soin as the len(cachedUrls) > 10^3 entries
+cachedUrls = []
+
+
 ## blocked URLS- tracking:
-## entries are of the form: <httpCode> : {ur: dictionaryOfForm {<S_Last: <>, N_last: <>, t_last: <>}},
+## domains/ urls that are discontinued, structure: "domain":{ <domain>: "url": <url>}, as soon as  the url- entries of the full discontinued list are > 10^3 or the domain- entries > 10^3 store them
 discontinued = {}
 
 
 #disallowed urls: urls where we are actually forbidden access to according to the robots.txt
 disallowed = {}
 
-#crawler Information
-crawlerInformation{"redirects":}
+
+#this list contains pairs of (url,code), where code is an unknown status code these
+# urls are taken off the frontier
+
+
 
 
 
@@ -218,15 +224,42 @@ def retry(headers):
 #####################
 # another small helper: is used  to move a domain from responseHttpCodes to dicontinuedDomains and delete it from the url frontier
 #  discontinuedDomains[domain] = copy.deepcopy(responseHttpCodes[domain])
-def moveAndDel(url, reason, domain_wide. data):
+def moveAndDel(url, reason):
     domain = getDomain(url)
-    reason = "average"
-    if domain_wide:
-        discontinued[domain] = ({"reason:" reason, 
-            "data": copy.deepcopy(data)})
+    
+    # in the following we check if the required entry of the responseHttpCode does 
+    # indeed exist
+    if reason == "average":
+        try:
+            data =  responseHttpCodes[domain]["data"] 
+        except KeyError as e:
+            print("Somehow moveAndDel gets a url for which responseHttpCodes[domain]['data']  does not exist")            
     else:
-        discontinued[domain][url] = discontinued[domain] = ({"reason:" reason, 
+        try:
+            data =  responseHttpCodes[domain][url]["data"] 
+        except KeyError as e:
+            print("Somehow moveAndDel gets a url for which responseHttpCodes[domain][url]['data']  does not exist") 
+    
+        
+    if reason == "average":
+        discontinued[domain] = {"average": reason, "data": copy.deepcopy(data)}
+        del responseHttpCodes[domain]
+        
+        
+    elif reason == "counter":
+        discontinued[domain][url]  = ({"reason": "counter", 
             "data": copy.deepcopy(data)})
+        del responseHttpCodes[domain][url]
+    
+    elif reason == "loop":
+        discontinued[domain][url]  = ({"reason": "loop", 
+            "data": copy.deepcopy()})
+        del responseHttpCodes[domain][url]
+       
+    else:
+         discontinued[domain][url] =  ({"reason": "unknown StatusCode", 
+            "data": copy.deepcopy(data)})
+         del responseHttpCodes[domain][url]
         
     
     
@@ -242,14 +275,15 @@ def moveAndDel(url, reason, domain_wide. data):
     
 #####################
 # multiplies the delay time by 2, bounded by 3600 s (1 hour)
-def exponentialDelay(delay, domain):
+def exponentialDelay(delay, url):
+    domain = getDomain(domain)
     d= delay
     if delay > 3600:
         d = 3600
     else:
         d = delay*2
     
-    urlFrontier[domain]["crawl-delay"] += d
+    urlFrontier[domain][url]["crawl-delay"] += d
     
         
         
@@ -264,39 +298,7 @@ def exponentialDelay(delay, domain):
 # if blocking is assumed, it puts the domain on the forbidden list, which the crawler 
 # always searches through before calling the url
 # in the global structure responseHttpCodes
-def handleResponse(url): 
-    response = requests.get(url, headers = headers, allow_redirects=False)
-    weight = 0
-    #remember, robots dictionary has the fields "delay", "allowed", "forbidden", "sitemap"
-    robotsInfo = extractTheRobotsFile(robotsTxtUrl(url))
-    
-    domain = urlparse(url)
-    
-    # here we need to calculate the delay with a delay- function!
-    delay = robotsInfo["delay"]
-    
-    responseHeaders = response.headers
-    
-    
-   # explanations for the different status codes can be found here:  https://umbraco.com/knowledge-base/http-status-codes
-    # in case the error needs to be treated for the domain as a whole
-    if responseHeaders["status_code"] in  [
-    "400",  # Bad Request
-    "403",  # Forbidden
-    "406",  # Not Acceptable
-    "429",  # Too Many Requests
-    "431",  # Request Header Fields Too Large
-    "500",  # Internal Server Error
-    "502",  # Bad Gateway
-    "503",  # Service Unavailable
-    "504",  # Gateway Timeout
-    "507",  # Insufficient Storage
-    "509",  # Bandwidth Limit Exceeded (non-standard)
-    "599",  # Network Connect Timeout Error
-    ]:
-        errorDomain(domain, responseHeaders, delay) 
-    
-    pass
+
     
     
     
@@ -466,52 +468,71 @@ def testData(a):
 #randomDelays = np.array(randomDelays)
 # print(np.mean(randomDelays))
 
-def handleURL(url, responseHeaders, delay):
-    code = responseHeaders["status_code"]
-    # for the question if it makes sense to disallow a whole domain
-    # we calculate a UTEMA- weighted average, that is what the sample- value is for
-    sample = 0.25
-    domain = getDomain(url)
-    domainValue = 0
-    # initialise this value like this,however
-    # note that in case the UTEMA weighted average is too big
-    # and that is the reason why we want to forbid this url, 
-    # it changes to "average"
-    reason = "counter"
-    
-    # ToDo: Change Value (use delay- function!)
-    retry_delay = retry(responseHeaders)
-    
 
-    if domain not in responseHttpCodes:
-         responseHttpCodes[domain] = {}
-    if url not in responseHttpCodes[domain]:
-         responseHttpCodes[domain][url] = {"counters": {}}
-         responseHttpCodes[domain][url]["timeData"] = [time.time()]
-         
-    if str(code) not in responseHttpCodes[domain][url]["counters"]:
-        responseHttpCodes[domain][url]["counters"] = {str(code): 0}
-         
-    responseHttpCodes[domain][url]["counters"] [str(code)] +=1
-         
-    counter = responseHttpCodes[domain][url]["counters"] [str(code)]
+def handle3xxLoop(url, headers, delay, code):
+    domain = getDomain(url)
+    retry_delay = headers.get(retry(headers))
+    if 299> code or code < 400:
+        return url
+
+    if "Location" in headers:
+        newUrl = headers.get("Location")
+        if "loopList" in responseHttpCodes:
+            loopList = responseHttpCodes[domain][url]["loopList"]
+            loopList.append((newUrl,code))
+            
+            
+            if len(loopList) > 5:
+                responseHttpCodes[domain][newUrl]["loopList"]["data"] = [("loop",loopList)]
+                moveAndDel(url, "loop")
+                return url
+        else:
+            responseHttpCodes["loopList"]= [(url,code)]
+            
+    return url
+
+
+def handle5xxOr4xx(url, code, retry_delay, delay):
+    domain = getDomain(url)
+    counter = responseHttpCodes[domain][url]["counters"] [str(code)] 
+    if urlFrontier[domain]["crawl-delay"] > urlFrontier[domain][url]["crawl-delay"]:
+        delay = urlFrontier[domain]["crawl-delay"]
+    else:
+        delay = urlFrontier[domain][url]["crawl-delay"]
+        
+    # now we just decide what happens at which code by case- distinction
     
-  
     
+    
+    if 299<code<400:
+    # the reason we check this here, is for the simple purpose,
+    # if the url - response has no Location header (should not be, but still)
+        if counter == 4:
+            moveAndDel(url, "counter")
+        else:
+            exponentialDelay(delay, url)
+            
+        sample = 0.2
+        
+                  
+        
     if code == 400:
         if counter == 3:
-            moveAndDel(url, reason, False)
+             moveAndDel(url, "counter")
             
         else:
-            exponentialDelay(delay, domain)
+            exponentialDelay(delay, url)
+        
+        sample = 1
+        
         
     
     
     elif 400 < code < 500 and code != 429:
         if counter == 2:
-             moveAndDel(url, reason, False)
+               moveAndDel(url, "counter")
         else:
-            exponentialDelay(delay, domain)
+            exponentialDelay(delay, url)
             
         
     elif code == 429: 
@@ -519,10 +540,10 @@ def handleURL(url, responseHeaders, delay):
             urlFrontier[domain]["crawl-delay"] == retry_delay
             
         else:
-            exponentialDelay(delay, domain)
+            exponentialDelay(delay, url)
         
         if counter == 10:
-            moveAndDel(url, reason, False)
+              moveAndDel(url, "counter")
         sample = 0.5
             
     elif 499 < code < 507 or code == 599:
@@ -530,16 +551,16 @@ def handleURL(url, responseHeaders, delay):
             urlFrontier[domain]["crawl-delay"] == retry_delay
             
         else:
-            exponentialDelay(delay, domain) 
+            exponentialDelay(delay, url) 
         
         if counter == 5:
-             moveAndDel(url, reason, False)
+               moveAndDel(url, "counter")
             
         sample = 1
             
     elif 506 < code < 510:
         if counter == 3:
-             moveAndDel(url, reason, False)
+               moveAndDel(url, "counter")
             
         else:
             urlFrontier[domain][url]["crawl-delay"] = 3600
@@ -548,23 +569,68 @@ def handleURL(url, responseHeaders, delay):
         
     else:
         if counter == 3:
-            moveAndDel(url, reason, False)
-    
+              moveAndDel(url, "counter")
+        sample = 0.3
     if url in responseHttpCodes[domain]:
         
         # max UTEMA - average (weighted average) of bad requests we
         # accept = 0.15
-        if (UTEMA(domain, weight, responseHttpCodes) > 0. and responseHttpCodes[domain]["N_last"] >= 20):
-            reason = "average"
+        if (UTEMA(domain, sample, responseHttpCodes) > 8 and responseHttpCodes[domain]["N_last"] >= 20):
             # in this case, we disallow the whole domain
             moveAndDel(url, "average")
+            
+           
+    
             
         
             
              
 
-             
-    responseHttpCodes
+def handleURL(url, responseHeaders, delay):
+    code = responseHeaders["status_code"]
+    # for the question if it makes sense to disallow a whole domain
+    # we calculate an UTEMA- weighted average, that is what the sample- value is for
+    sample = 0.25
+    domain = getDomain(url)
+    time = time.time()
+    
+    # ToDo: Change Value (use delay- function!)
+    retry_delay = retry(responseHeaders)
+    
+
+    if domain not in responseHttpCodes:
+         responseHttpCodes[domain] = {"data": []}
+    if url not in responseHttpCodes[domain]:
+         responseHttpCodes[domain][url] = {"counters": {}}
+         responseHttpCodes[domain][url]["timeData"] = [time]
+         
+         
+    # data for debugging in case that the reason for moveAndDel is "average"   
+    responseHttpCodes[domain]["data"] += [(time,code)]
+    responseHttpCodes[domain]["data"] = responseHttpCodes[domain][-100:]
+    data = responseHttpCodes[domain]["data"]
+         
+         
+         
+         
+    if str(code) not in responseHttpCodes[domain][url]["counters"]:
+        responseHttpCodes[domain][url]["counters"] = {str(code): 0}
+         
+    responseHttpCodes[domain][url]["counters"] [str(code)] +=1
+    
+    if 399<code<600:
+        handle5xxOr4xx(url, code, retry_delay, delay)
+    elif 299<code<400:
+        handle3xx(url, code, delay, retry_)
+    else:
+        
+         
+    
+    
+  
+
+
+
 
             
     
