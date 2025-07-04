@@ -1,7 +1,7 @@
-# from query_processing.models.bm25 import BM25Model
+from query_processing.models.bm25 import BM25Model
 from query_processing.models.boolean import BooleanModel
 from query_processing.models.core import Document, InvertedIndex
-# from query_processing.models.tfidf import TfidfModel
+from query_processing.models.tfidf import TfidfModel
 
 # -------------------------------- collection -------------------------------
 docs = [
@@ -27,5 +27,5 @@ for d in docs:
 query = "university town Tübingen"
 
 print("Boolean:", BooleanModel(idx).score(query))
-# print("TF-IDF :", TfidfModel(idx).score(query))
-# print("BM25   :", BM25Model(idx).score(query))
+print("TF-IDF :", TfidfModel(idx).score(query))
+print("BM25   :", BM25Model(idx).score(query))
