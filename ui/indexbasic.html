@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Search Results Visualization</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+<body>
+  <h1>Search Results: Clustered Bubble View</h1>
+  <svg id="bubbleChart" width="900" height="600"></svg>
+
+  <script>
+    d3.json("data.json").then(data => {
+      const svg = d3.select("#bubbleChart");
+      const width = +svg.attr("width");
+      const height = +svg.attr("height");
+
+      const color = d3.scaleOrdinal(d3.schemeCategory10);
+      const minRadius = 20;
+      const maxRadius = Math.max(40, 300/data.length); // Adjusts bubble radius based on doc count
+
+      const radiusScale = d3.scaleSqrt()
+        .domain([0, d3.max(data, d => d.score)])
+        .range([minRadius, maxRadius]);
+
+      const simulation = d3.forceSimulation(data)
+        .force("charge", d3.forceManyBody().strength(5))
+        .force("center", d3.forceCenter(width / 2, height / 2))
+        .force("collision", d3.forceCollide().radius(d => radiusScale(d.score) + 2))
+        .on("tick", ticked);
+
+      const node = svg.selectAll("circle")
+        .data(data)
+        .enter().append("circle")
+        .attr("r", d => radiusScale(d.score))
+        .attr("fill", d => color(d.topic))
+        .attr("stroke", "#333")
+        .attr("stroke-width", 1.5)
+        .on("mouseover", (event, d) => {
+          tooltip.style("visibility", "visible")
+                 .html(`<strong>${d.title}</strong><br>${d.snippet}<br><a href="${d.url}" target="_blank">Visit</a>`);
+        })
+        .on("mousemove", event => {
+          tooltip.style("top", (event.pageY - 10) + "px")
+                 .style("left", (event.pageX + 10) + "px");
+        })
+        .on("mouseout", () => tooltip.style("visibility", "hidden"))
+        .on("click", (event, d) => window.open(d.url, "_blank"));
+
+      const tooltip = d3.select("body").append("div")
+        .attr("class", "tooltip");
+
+      function ticked() {
+        node.attr("cx", d => d.x)
+            .attr("cy", d => d.y);
+      }
+    });
+  </script>
+</body>
+</html>
