@@ -1,3 +1,4 @@
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%
 import requests
 import bisect #module for binary search
 import time
@@ -9,8 +10,7 @@ import re
 from datetime import datetime, timezone
 from dateutil.parser import parse
 from urllib.parse import urljoin, urlparse
-
-
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ###############################################
 # only for testing
 headers = {
@@ -25,21 +25,10 @@ headers = {
     "Connection": "keep-alive"
 }
 
-url = "https://www.yale.edu"
-
-# response = requests.get(url, headers=headers)
 
 
-# returns a dictionary of form {delay: <delay value>,explicitely allowed pages: <DictionaryOfPages> forbidden pages: <DictionaryOfPages>}}
+# FOR FARHA:
 
-
-
-
-
-#counts the number of lines starting with Disallow (as it happens, the yale website only has one agent specified,
-# namely the general one):
-# allowdCount = response.text.count("Disallow:")
-#print(f"So many 'Allow''s are in the text {allowdCount}")
 
 ###############################################
 
@@ -47,13 +36,36 @@ url = "https://www.yale.edu"
 
 
 
-# for the meaning of weighted Sample Sum, weighted Sample Number, Last time-point (t_{i-1}) see the paper in the commentary of UTEMA
-''' data structure used by UTEMA '''
-# <domain> :{"S_last": <=weightedSampleSum>,"N_last": <weightedSampleNumber> "t_last":<lastTimePoint>, ""}
+# dictionary used for the 
 responseTimes = {}
 
 
 # dictionary of discovered URLs which have not yet been crawled
+# has entries of Form <url>: {urlDictionary},
+# where urlDictionary has the 
+# Fields:
+#        - code: The status_code of the last try of a http- request for this url
+#        - title: the title in the html- file, if the request was successfull
+#        - text: The text in the body of the html- file
+#        - scheduled: The time, measured in Unix- time when the next call of the url
+#          will be allowed
+#        - delay: the current crawl- delay
+#        - outgoing: the list of pairs with entries that consist of one outgoing link #          and its tueEng score, if it is already known, for each of the outgoing   #          links (refering to another url)
+#        - incoming: the list of pairs with entries that consist of one incoming link #          and its tueEng score for each of the incoming links (refering to url)#   
+#        - linkingDepth: This is the (currently) minimal number of links of the same #          domain on which a website has been reached
+#  
+#        - tueEngScore: the score that determines, how relevant this page is to
+#          Tübingen
+#           and if it is in english, this is where the metric- function from    
+#           crawlerMetric.py writes its entries, or if it updates the score (if we want
+#           to implement that), where the score is updated; we initialise the
+#           tueEngScore with a low number != 0 (and not so low, that multiplication 
+#           with it will result in 0 due to computation error)
+# {"code": 0, "title": "", "text": "","scheduled": time.time(), "delay": 1.5, "outgoing": [], "incoming": [],"linkingDepth":5 "tueEngScore: 0.1"}
+
+
+
+
 urlFrontier = {}
 
 #active redirection- paths, each entry is a list where a url follows
@@ -92,35 +104,131 @@ disallowed = {}
 
 
 
-####### just for testing of UTEMA:
+##################################
+# GENERAL HELPERS
+################################ 
+# The functions in this paragraph all are used in more than one of the following paragraphs
+#----------------------------
+
+#======================================================================
+#testing done?: Not yet
+#======================================================================
+
+
+
+# current state of this passage:::::::::::::::::::::::::::::::::::::::::::::::::::::::;
+# This passage is under development
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+# note, that this does much more than just receiving a regular expression, it gives a start-string (start) and 
+# an end- string (end) everything in between is returned, without the entries in the list of strings (without)
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+
+
+# basic idea:   Given a text, and a start- and end- string, as well as a list of without- strings
+#               returns the text where exactly the strings of the form of items in without are deleted
+#              string string string [string]
+def searchText (text, start, end, without):
+    inBetween = "("
+    
+    for index in range(len(without)):
+        if index < len(without)-1:
+            inBetween = inBetween + without[index] + "|"
+            
+        else:
+            inBetween = inBetween + without[index] + ")"
+            
+    
+    snippet = re.search(start + ".*" + end, text).group()
+    snippet = re.sub(inBetween, "", snippet)
+    
+        #  string
+    return snippet
+    
+# print(searchText("Hallo das ist ein Fehler toll","Hallo", "toll", [" Feh", "ler ", "ein", ""]))
+
+# TODO: implement this get- method, which returns the information about the url
+# as long as it is not in the disallowedURL Cache nor in the disallowedURL DataBase
+# nor its domain is disallowed, further check if it is 
+def getPageInfo(url):
+    if url not in disallowedURLCache:
+        #... then get the url 
+        pass
+      
+    
+    
+
+# This function is still under development and not yet usable
+def loadURL(url):
+    try:
+        response = requests.get(url)
+        content = response.content
+        
+        if url not in urlFrontier and getPageInfo(url)["allowed"]:
+            urlFrontier[url] = {"code": 0, "title": "", "text": "","scheduled": time.time(), "delay": 1.5, "outgoing": [], "incoming": [],"linkingDepth":5,"tueEngScore": 0.1}
+        
+        if 199 < response.status_code < 300:
+            pass
+    except: pass
+    
+#%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    
+        
+
+####### just for the testing of UTEMA (you find it below in this file):
+
 randomDelays = []
 
-######## cache
-disallowedCache = []
+######## cache for all the disallowed URLS, disallowed means: We suspect we have
+# been blocked on the URL
 
-######################
-'
+disallowedURLCache = []
+
+######## cache for all the disallowed domains, disallowed means: We suspect we have
+# been blocked on the URL
+disallowedDomainsCache = {}
+
+
 def getDomain(url):
     '''extracts the domain from a given url'''
      # this extracts the domain- name from the url
-     domain = re.search("//[^/:]*", url).group()[2:]
-     return domain
+    domain = re.search("//[^/:]*", url).group()[2:]
+    return domain
      
 
 
-################
-def notDisallowed(url):
-    ''' checks if url is in disallowedCache or in the disallowed SQL- file'''
-    domain = getDomain(url)
-    notDisallowedValue = False
-    
-    if domain in disallowedCache:
-        if domain["NotDisallowe"] == True:
-            
-        
+##################################
+# ROBOTS.TXT  
+################################ 
+# The functions in this paragraph all have to do with the robots.txt page
+#----------------------------
+
+#======================================================================
+#testing done?: Some basic tests were done, but no systematic testing
+#======================================================================
 
 
-# adds a new item to an already lexicographically ordered list
+# current state of this passage:::::::::::::::::::::::::::::::::::::::::::::::::::::::;
+# This passage is finished for now, the extractTheRobotsFile could be vastly shortened, by using 
+# the regular expression library re
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+
+#............................
+# helpers
+#............................
+
+
+
+# basic idea:   adds a new item to an already lexicographically ordered list
+# usage:        used in extractTheRobotsFile
+# arguments:    
+#               lst: is a list of lexicographically ordererd items
+#               item: is an item that is to be inserted into the list
+# return value: 
+#               list of lexicographically ordered items
 def addItem(lst, item):
     i = bisect.bisect_left(lst, item)
 
@@ -134,6 +242,14 @@ def addItem(lst, item):
 
 
 
+# basic idea:   loads the robots.txt
+# usage:        used in extractTheRobotsFile
+# arguments:    
+#               lst: is a list of lexicographically ordererd items
+#               item: is an item that is to be inserted into the list
+# return value: 
+#               lst of lexicographically ordered items
+# []->
 def extractTheRobotsFile(url):
     robotsTxtUrl = re.search(r"(http|https)://[^/]*", url).group() + "/robots.txt"
     text = requests.get(robotsTxtUrl).text
@@ -286,83 +402,6 @@ def exponentialDelay(delay, url):
     urlFrontier[domain][url]["crawl-delay"] += d
     
         
-        
-    
-
-
-
-
-#####################################
-# The following functions detect if the crawler has been blocked by a domain
-# it further counts the responseCodeMessages which could be related to blocking 
-# if blocking is assumed, it puts the domain on the forbidden list, which the crawler 
-# always searches through before calling the url
-# in the global structure responseHttpCodes
-
-    
-    
-    
-
-            
-        
-    
-        
-    
-        
-        
-    
-         
-             
-            
-        
-        
-        
-      
-
-    # different kinds of errors are weighted with different severity
-    # if code == "301":
-    #     # Moved Permanently: Resource has permanently moved to a new URL.
-    #     # Crawler behavior: Update link in outgoing links - list of incoming url
-    #     url = s.get("Location")
-        
-        
-
-    # elif code == "302":
-    #     # Found: Temporary redirect (may change method to GET).
-    #     # Crawler behavior: Follow the Location header; keep the original URL as canonical.
-    #     pass
-
-    # elif code == "303":
-    #     # See Other: Temporary redirect to retrieve a different resource (always via GET).
-    #     # Crawler behavior: Follow the Location header as GET; don’t update canonical URL.
-    #     pass
-
-    # elif code == "307":
-    #     # Temporary Redirect: Temporary redirect preserving the HTTP method.
-    #     # Crawler behavior: Follow the Location header with the same method; don’t change stored URL.
-    #     pass
-
-    # elif code == "308":
-    #     # Permanent Redirect: Permanent redirect preserving the HTTP method.
-    #     # Crawler behavior: Update canonical URL to Location header and repeat the same method.
-    #     pass
-
-    # elif code == "304":
-    #     # Not Modified: Resource hasn’t changed since your last conditional request.
-    #     # Crawler behavior: Serve from cache; do not re-download the body.
-    #     pass
-
-   
-    
-    
-    
-    
-        
-        
-    
-    
-
-
 
 
     
@@ -432,8 +471,6 @@ def testData(a):
     # global randomDelays
     delayList = np.random.uniform(10**(-6),2* 10**(-6),10**6)
     valueList = np.random.exponential(a, 10**6)
-    randomDelays = valueList
-
     dataPointsx = []
     dataPointsy = []
 
@@ -621,42 +658,19 @@ def handleURL(url, responseHeaders, delay):
     if 399<code<600:
         handle5xxOr4xx(url, code, retry_delay, delay)
     elif 299<code<400:
-        handle3xx(url, code, delay, retry_)
+       # handle3xx(url, code, delay, retry_)
+       pass
     else:
+        pass
         
          
-    
-    
-  
 
-
-
-
-            
-    
-            
-#test errorDomain
-urlFrontier['test'] = {}
-urlFrontier['test']["crawl-delay"] = 1
-errorDomain("test", {"status_code": 401, "retry-after":"4"}, 2)
-errorDomain("test", {"status_code": 400, "retry-after":"4"}, 1)
-print(f"----------------------------")
-# print(f"discontinuedDomains[test] = {"test" in discontinuedDomains}")
-#print(f"discontinuedDomains[test] = {discontinuedDomains['test']}")
-# 
-# print(f"responseHTTPCodes[test] = {responseHttpCodes['test']}")
-# print(f"urlFrontier[test] = {urlFrontier['test']}")
-# errorDomain("test", {"status_code": 401, "retry-after":"4"}, 3)
-# print(f"----------------------------")
-# print(f"discontinuedDomains[test] = {discontinuedDomains['test']}")
-# print(f"responseHTTPCodes[test] = {responseHttpCodes['test']}")
-# print(f"urlFrontier[test] = {urlFrontier['test']}")
 
            
 
     
 
-# utilises U`tEMA (Unbiased Time- Exponential Moving Average, from Menth et al.: "On moving Averages, Histograms and Time- Dependent
+# utilises UTEMA (Unbiased Time- Exponential Moving Average, from Menth et al.: "On moving Averages, Histograms and Time- Dependent
 # Rates for Online Measurement (https://atlas.cs.uni-tuebingen.de/~menth/papers/Menth17c.pdf))
 def delayTime(delay):
     ''' calculates what the crawl- delay should be, i.e., the time, until the next 
@@ -666,19 +680,29 @@ def delayTime(delay):
 ###########################
 # filter the kind of urls we are interested in
 
-
-
- 
- def getBlocked(url)
     
  
  
 def isUrlAllowed(url):
     domain = getDomain(url)
     if domain in discontinuedDomains:
+        pass
         
         
-
+# Given a list of (relative) urls and a comparison url, which one is the 
+# longest match?
+def longestMatch(urlList, comparisonURL):
+        matchLenghts = []
+        for index in range(urlList):
+            matchSize = 0
+            size = min(len(urlList),len(comparisonURL))
+            for a in size:
+                pass
+        
+                
+                
+            
+    
 
 
 #------------
@@ -696,38 +720,20 @@ def extractURLs(url):
      s = " <a href = 'dsdjshklfsl' </a>"
      
      urls = re.findall(r'''<a\s*href\s*= [ ]*("\').*("\')[ ]*>.*</a>''', html)
-     urls = [re.search(r'''("|')[^ ]*("|')''', a).group()[1:-1] for a in urls or ]
+     urls = [re.search(r'''("|')[^ ]*("|')''', a).group()[1:-1] for a in urls]
      full_urls = [urljoin(url, a) for a in urls]
      
-     urls = [a for a in urls if a not in dicsontinuedUrls ]
      
-     
-     
-     
-     
-     
-     
-     
+     # TODO: This does not work yet! If we extract the robotsTxtUrl we will, with high
+     # probability get relative URLS -> no URL will be delete
+     urls = [a for a in full_urls if a not in extractTheRobotsFile(robotsTxtUrl(url))["forbidden"]]
+     urls = [a for a in full_urls if a not in discontinued]
     
-     
-     parsed = urlparse(full_url)
-     parsed.scheme in ("http", "https")
+     pass
      
      
      
-     
-class crawler:
-    ''' This class defines what a crawler can do'''
-    
-    
-    urlFrontier = []
-     def __init__(self, name, redirects=0):
-        """
-        The __init__ method runs when you create a new instance.
-        `self` is the new object; you attach instance attributes to it.
-        """
-    self.NumberOfRedirects = 0
-    
+
     
 
 
@@ -750,3 +756,5 @@ def singleCrawler(url, IncomingLink):
 
 
 
+
+# %%
