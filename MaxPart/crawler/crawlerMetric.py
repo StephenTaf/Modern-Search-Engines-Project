@@ -5,7 +5,6 @@ import CrawlerHelpers
  # you can have a look at urlFrontier and 
  # the comment about it in the CrawlerHelpers.py
  # information = CrawlerHelpers.urlFrontier[url]
- # and additionally, we get the scores of the incoming
  
  #------------------------------
  # Online metrics (use them while the crawler is running)
