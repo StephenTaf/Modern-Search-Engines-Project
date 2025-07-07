@@ -15,6 +15,8 @@ from bs4 import BeautifulSoup
 from heapdict import heapdict
 import crawlerMetric
 import threading
+import duckdb
+from pympler import asizeof
 
 
 # in order to be able to raise customed- errors
@@ -43,7 +45,7 @@ headers = {
 ###### some global variables ########
 
 # informationFromInputForTheCrawler:
-inputDict = {"crawlingAllowed": True, }
+inputDict = {"crawlingAllowed": True}
 
 
 # dictionary of discovered URLs which have not yet been crawled
@@ -169,27 +171,8 @@ disallowedDomainsCache = {}
 # This passage is under development
 #::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 
-# note, that this does much more than just receiving a regular expression, it gives a start-string (start) and 
-# an end- string (end) everything in between is returned, without the entries in the list of strings (without)
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-
-# looks the stored information for the url up, either in cachedUrls, or in urlsDB
-# finds the entry and returns it and deletes it
-# TODO: IMPLEMENT
-def  readAndDelUrlInfo(url):
-    return None
-
-# returns True, if the url is already in storage, either in cachedUrls or in urlsDB, otherwise returns false
-def isUrlStored(url):
-    return False
-
-# checks if there is an entry for the url in the disallowedDomainsCach, in the
-# disallowedURLCache, in the disallowedDomainsDB, or in the disallowedURLDB if this
-# the case, then it returns True, otherwise it returns False
-#TODO: IMPLEMENT
-def findDisallowedUrl(url):
-    return False
 
 # function that creates a filling for a full test of the
 # frontier- responseHttp- pipeline
@@ -244,15 +227,6 @@ def searchText (text, start, end, without):
     
 # print(searchText("Hallo das ist ein Fehler toll","Hallo", "toll", [" Feh", "ler ", "ein", ""]))
 
-# TODO: implement this get- method, which returns the information about the url
-# as long as it is not in the disallowedURL Cache nor in the disallowedURL DataBase
-# nor its domain is disallowed, further check if it is 
-def getPageInfo(url):
-    if url not in disallowedURLCache:
-        #... then get the url 
-        pass
-      
-    
 
 # this function returns the domain- string
 # (www. ... until, not including "/" is reached (if it exists)), given a
@@ -338,7 +312,7 @@ def moveAndDel(url, reason):
     elif reason == "loop":
         loopList = responseHttpErrorTracker[domain][url]["loopList"]
         disallowedURLCache[url]  = ({"reason": "loop", 
-            "data":  loopList[0]})
+            "data":  [loopList[0]]})
         for a in loopList:
             if a[0] in frontier:
                 del frontier[a]
@@ -349,7 +323,86 @@ def moveAndDel(url, reason):
                          exist''')
      
     
+##################################
+# DATABASE MANAGEMENT
+################################ 
+# This paragraph is all about the databases urlsDB, disallowedDomainsDB, and disallowedURLDB
+# and about their management, and storing the cache into them after each of the caches has reached a certain size
+#----------------------------
 
+def putInStorage(list, tableName):
+    for a in list:
+        
+    
+#......................................
+#all about urlsDB
+#......................................
+
+crawlerDB = duckdb.connect("urlsDB.duckdb")
+
+# Create the database
+crawlerDB.execute("""
+    CREATE TABLE urlsDB (
+        id TEXT,
+        title TEXT,
+        text TEXT,
+        lastFetch DOUBLE,
+        outgoing TEXT[],
+        incoming TEXT[],
+        domainLinkingDepth TINYINT,
+        linkingDepth TINYINT,
+        tueEngScore
+""")
+
+
+def storeCache():
+    # thus value could be optimised, byt th
+    if len(cachedUrls) > 20000:
+        
+        
+        
+        
+
+
+
+
+
+
+
+
+
+# TODO: implement this get- method, which returns the information about the url
+# as long as it is not in the disallowedURL Cache nor in the disallowedURL DataBase
+# nor its domain is disallowed, further check if it is 
+def getPageInfo(url):
+    if url not in disallowedURLCache:
+        #... then get the url 
+        pass
+      
+      
+
+# looks the stored information for the url up, either in cachedUrls, or in urlsDB
+# finds the entry and returns it and deletes it
+# TODO: IMPLEMENT
+def  readAndDelUrlInfo(url):
+    return None
+
+# returns True, if the url is already in storage, either in cachedUrls or in urlsDB, otherwise returns false
+def isUrlStored(url):
+    return False
+
+# checks if there is an entry for the url in the disallowedDomainsCach, in the
+# disallowedURLCache, in the disallowedDomainsDB, or in the disallowedURLDB if this
+# the case, then it returns True, otherwise it returns False
+#TODO: IMPLEMENT
+def findDisallowedUrl(url):
+    return False
+
+    
+
+#.....................................................................=
+#testing done?: Not yet
+#.....................................................................=
 
 ##################################
 # ROBOTS.TXT  
@@ -925,7 +978,8 @@ def frontierRead(info, url):
         return
     
     
-    cachedUrls[url] = frontier[url] = {"title": "", "text": "","lastFetch": time.time(), "outgoing": [], "incoming": [],"domainLinkingDept":5, "linkingDepth": 50, "tueEngScore": 0.0}
+    cachedUrls[url] =  {"title": "", "text": "","lastFetch": time.time(), "outgoing": [], "incoming": [],
+                                       "domainLinkingDept":5, "linkingDepth": 50, "tueEngScore": 0.0}
         
     info = cachedUrls[url]
         
@@ -989,6 +1043,10 @@ def inputReaction():
         cmd = input()
         
         if cmd == "stop":
+            inputDict["crawlingAllowed"] = False
+            
+
+            
             print("the crawler now stores the frontier, load the caches into the databases and won't read from the frontier any more. Furthermore, after this is done, the crawler function call will end")
         
         if cmd == "newSeed":
