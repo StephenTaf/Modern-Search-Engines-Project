@@ -358,10 +358,12 @@ def putInStorage(list, tableName):
 #......................................
 #all about urlsDB
 #......................................
-#crawlerDB = duckdb.connect("urlsDB.duckdb")
+crawlerDB = duckdb.connect("urlsDB.duckdb")
 
-# Create the database
-'''crawlerDB.execute("""
+#Create the database
+# IMPORTANT: Needs to be run first (AND ONLY ONE TIME EVER per machine!!!) before running 
+def createUrlsDBTable():
+    crawlerDB.execute("""
     CREATE TABLE urlsDB (
         id TEXT,
         title TEXT,
@@ -372,14 +374,44 @@ def putInStorage(list, tableName):
         domainLinkingDepth TINYINT,
         linkingDepth TINYINT,
         tueEngScore DOUBLE)
-""")'''
+    """)
 
 
-def storeCache():
-    # thus value could be optimised, byt th
-    if len(cachedUrls) > 20000:
-        pass
-        
+
+
+def storeCache(forced=False):
+    if len(cachedUrls) > 20_000 or forced:
+        rows = []                       # collect rows first
+
+        for url, data in cachedUrls.items():
+            rows.append((
+                url,
+                data["title"],
+                data["text"],
+                data["lastFetch"],
+                data["outgoing"],
+                data["incoming"],
+                data["domainLinkingDepth"],
+                data["linkingDepth"],
+                data["tueEngScore"],
+            ))
+
+        crawlerDB.executemany(
+            """
+            INSERT INTO urlsDB
+            (id, title, text, lastFetch, outgoing, incoming,
+             domainLinkingDepth, linkingDepth, tueEngScore)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+
+        cachedUrls.clear() 
+            
+    
+            
+                  
+
         
         
         
@@ -394,13 +426,42 @@ def storeCache():
 def  readAndDelUrlInfo(url):
     if url in cachedUrls:
         return cachedUrls[url]
+    
+    result = crawlerDB.execute(
+        """
+        DELETE FROM urlsDB
+        WHERE id = ?
+        RETURNING id, title, text, lastFetch, outgoing, incoming, domainLinkingDepth, linkingDepth, tueEngScore
+        """,
+        [url],                 # parameters go in ONE iterable
+    )
+    row = result.fetchone() 
+    
+    if row is None:
+        raise ValueError(f"{url} was neither in cache nor DB")
+    col_names = [d[0] for d in result.description]
+    deletedUrl = dict(zip(col_names, row))  # {'id': 123, 'title': …}
+    del deletedUrl["id"]
+    return deletedUrl
+    
+    
+
+    
+    
     return None
 
 # returns True, if the url is already in storage, either in cachedUrls or in urlsDB, otherwise returns false
 def isUrlStored(url):
     stored = False
     if url in cachedUrls:
-         stored = True
+         return True
+        
+    stored = crawlerDB.execute(
+        "SELECT EXISTS (FROM urlsDB WHERE id = ?)",
+        [url]
+    ).fetchone()[0] 
+    
+     
     return stored
 
 # checks if there is an entry for the url in the disallowedDomainsCach, in the
@@ -1034,7 +1095,7 @@ def frontierRead(info, url, schedule):
     info["outgoing"] = extractURLs(rawHtml, url)
     
     if info["tueEngScore"] >0.5:
-        if info["domainLinkingDepth"]<1 and info["linkingDepth"]<1:
+        if info["domainLinkingDepth"]<1 and info["linkingDepth"]<2:
             #if len(info["outgoing"]) == 0:
              #       raise Error(f"sucessorUrl in None, the outgoing list is {url}")
             for successorUrl in info["outgoing"]:
@@ -1136,6 +1197,7 @@ def frontierInit(lst):
         if robotsTxtCheck(url)[1]:
             frontier[url] = time.time()+robotsTxtCheck(url)[0]
             frontierDict[url]  = {"delay": robotsTxtCheck(url)[0], "linkingDepth": 0, "domainLinkingDepth": 0, "incomingLinks": []}
+            
         
     
 
@@ -1147,6 +1209,8 @@ def crawler(lst):
     frontierInit(lst)
     counter = 0
     while len(frontier) != 0 and inputDict["crawlingAllowed"]:
+        
+        storeCache()
         for i in range(min(100, len(frontier))):
             counter +=1
             url, schedule  = frontier.popitem()
@@ -1169,14 +1233,8 @@ def crawler(lst):
                 
             
     # TODO: implement storeEverything  
-
-    len1 = len(cachedUrls)
-    len2 = len(disallowedURLCache) 
-    len3 = len2 + len(disallowedDomainsCache)
-
-
-    # print(f"We have a ratio of successfullyStored/disallowed of {len1/len2}"  )
-        # storeEverything()
+    storeCache(True)
+    
     print(f"the actual number of cachedUrls: {len(cachedUrls)}")
     print(f"the actual number of errors: {len(responseHttpErrorTracker)}")
     print(f"the size of the frontier: {len(cachedUrls)}")
@@ -1184,14 +1242,15 @@ def crawler(lst):
     print(f"the actual number disallowedDomains: {len(disallowedDomainsCache)}")
 
 
-if __name__ == "__main__":
-    input_thread = threading.Thread(target=inputReaction)
-    input_thread.daemon = True 
-    threading.main_thread.daemon = True
-    
-    input_thread.start()
-    if threading.current_thread() == threading.main_thread():
-        crawler(["https://whatsdavedoing.com"])
-        print("[MAIN] crawler finished")
-
+def runCrawler(lst):
+    if __name__ == "__main__":
+        input_thread = threading.Thread(target=inputReaction)
+        input_thread.daemon = True 
+        threading.main_thread.daemon = True
+        
+        input_thread.start()
+        if threading.current_thread() == threading.main_thread():
+            crawler(lst)
+            print("[MAIN] crawler finished")
 #%%
+runCrawler(["https://whatsdavedoing.com"])
