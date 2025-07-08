@@ -405,6 +405,7 @@ def storeCache(forced=False):
             """,
             rows,
         )
+        crawlerDB.commit()
 
         cachedUrls.clear() 
             
@@ -437,11 +438,15 @@ def  readAndDelUrlInfo(url):
     )
     row = result.fetchone() 
     
+    crawlerDB.commit()
+    crawlerDB.execute("PRAGMA optimize;") 
+    
     if row is None:
         raise ValueError(f"{url} was neither in cache nor DB")
     col_names = [d[0] for d in result.description]
     deletedUrl = dict(zip(col_names, row))  # {'id': 123, 'title': …}
     del deletedUrl["id"]
+    crawlerDB.execute("CHECKPOINT;")  
     return deletedUrl
     
     
@@ -460,6 +465,7 @@ def isUrlStored(url):
         "SELECT EXISTS (FROM urlsDB WHERE id = ?)",
         [url]
     ).fetchone()[0] 
+    crawlerDB.commit()
     
      
     return stored
