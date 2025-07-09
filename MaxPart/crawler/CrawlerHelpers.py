@@ -394,7 +394,7 @@ crawlerDB.execute("""
         schedule DOUBLE,
         delay DOUBLE,
         url TEXT,
-        incomingLinks TEXT[],
+        incomingLinks TEXT,
         domainLinkingDepth TINYINT,
         linkingDepth TINYINT)
     """)
