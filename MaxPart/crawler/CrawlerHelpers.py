@@ -22,6 +22,12 @@ import duckdb
 from pympler import asizeof
 import html
 import lxml
+import metric as metr
+from seed import Seed as seed
+from exportCsv import export_to_csv as expCsv 
+import json
+
+
 
 print(f"TOP-LEVEL EXECUTION: __name__={__name__}, thread={threading.current_thread().name}")
 
@@ -95,6 +101,10 @@ frontierDict = {}
 # the delay is added to each individual delay in frontier if a new url is added and
 # its domain matches one of the keys in this dictionary here
 domainDelaysFrontier = {}
+
+
+# contains the UTEMA - averaged response times an the UTEMA- data per domain (for speed optimisation)
+responseTimesPerDomain = {}
 
 # contains entries of form <domain-name>:
 robotsTxtInfos = {}
@@ -371,7 +381,7 @@ crawlerDB.execute("""
         text TEXT,
         lastFetch DOUBLE,
         outgoing TEXT[],
-        incoming TEXT[],
+        incoming TEXT,
         domainLinkingDepth TINYINT,
         linkingDepth TINYINT,
         tueEngScore DOUBLE)
@@ -405,7 +415,7 @@ def storeFrontier():
         ( frontierId, url,
                 frontier[url],
                 frontierDict[url]["delay"],
-                frontierDict[url]["incomingLinks"],
+                json.dumps(frontierDict[url]["incomingLinks"]),
                 frontierDict[url]["domainLinkingDepth"],
                 frontierDict[url]["linkingDepth"]))
         frontierId +=1
@@ -477,7 +487,7 @@ def storeCache(forced=False):
                     data["text"],
                     data["lastFetch"],
                     data["outgoing"],
-                    data["incoming"],
+                    json.dumps(data["incoming"]),
                     data["domainLinkingDepth"],
                     data["linkingDepth"],
                     data["tueEngScore"]))
@@ -507,6 +517,13 @@ def readAndDel(table, column, identifier):
 def  readAndDelUrlInfo(url):
     if url in cachedUrls:
         return cachedUrls[url]
+    
+    else:
+        infoDict = readAndDel("urlsDB", "url", url)
+        if infoDict:
+            infoDict["incoming"] = json.loads(infoDict["incoming"])
+        return infoDict
+        
 
     return readAndDel("urlsDB", "url", url)
 
@@ -521,6 +538,7 @@ def loadFrontier():
             frontier[url] = result["schedule"]
             del result["schedule"]
             del result ["url"]
+            result["incomingLinks"] = json.loads(result["incomingLinks"])
             frontierDict[url] = result
         else:
             break
@@ -1066,7 +1084,7 @@ def statusCodesHandler(url, location, code, info):
     
     
 # this function updates the information of urls in the cached urls or in storage
-def updateInfo(url, parentUrl, info):
+def updateInfo(url, parentUrl, info, score):
     # If there was indeed an entry for this url in cache or storage, 
     # this value will be turned to True, this value is the return- value 
     updated = False
@@ -1079,7 +1097,7 @@ def updateInfo(url, parentUrl, info):
     
     if info:
         updated = True
-        info["incoming"].append(parentUrl)
+        info["incoming"].append([parentUrl,score])
         
         if domainParent != domainUrl:
             try:
@@ -1105,7 +1123,7 @@ def updateInfo(url, parentUrl, info):
     return updated
         
 # this is only called, if the url is already in the frontier
-def updateFrontier(url, ancestorUrl):
+def updateFrontier(url, ancestorUrl, score):
     domain = getDomain(url)
     ancestorDomain = getDomain(ancestorUrl)
 
@@ -1116,7 +1134,7 @@ def updateFrontier(url, ancestorUrl):
        frontierDict[url]["linkingDepth"] = (min(frontierDict[ancestorUrl]
                                          ["linkingDepth"]+1,frontierDict[url]
                                          ["linkingDepth"] ))
-    frontierDict[url]["incomingLinks"].append(ancestorUrl)
+    frontierDict[url]["incomingLinks"].append([ancestorUrl,score])
 
     
     
@@ -1127,15 +1145,14 @@ def updateFrontier(url, ancestorUrl):
     
 # this function gets an url, reads all urls that are of interest to us and then checks for each of them if they
 # are still admissible, i.e, if they have been disallowed or if they are already stored, in this case some of their
-# information needs to be updated (happens via updateInfo). If this is not the case, it throws a list with entries of the form [<Unix time starting at which access to the url is allowed>, url, {"delay": <delay>, "linkingDepth": "domainLinkingDepth": <integer>, "incomingLinks": < list of parent- urls>}] into the frontier
-#REQUIREMENTS: predURL must still be in the frontier at the time of call!!!!!
-def frontierWrite(url, predURL):
+# information needs to be updated (happens via updateInfo). If this is not the case, it throws a list with entries of the form [<Unix time starting at which access to the url is allowed>, url, {"delay": <delay>, "linkingDepth": "domainLinkingDepth": <integer>, "incomingLinks": < list of parent- urls with tueEngScores>}] into the frontier
+def frontierWrite(url, predURL, score):
     domain = getDomain(url)
     if url in frontier and predURL:
-        updateFrontier(url, predURL) 
+        updateFrontier(url, predURL, score) 
     elif findDisallowedUrl(url):
         pass
-    elif updateInfo(url, predURL,readAndDelUrlInfo(url)):
+    elif updateInfo(url, predURL,readAndDelUrlInfo(url),score):
         pass
     else:
         robotsCheck = robotsTxtCheck(url)
@@ -1163,10 +1180,10 @@ def frontierWrite(url, predURL):
                     frontierDict[url]["linkingDepth"] = frontierDict[predURL]["linkingDepth"]+1
                     frontierDict[url]["domainLinkingDepth"] = 0
             if "incomingLinks" not in frontierDict[url]:
-                frontierDict[url]["incomingLinks"] = [predURL]
+                frontierDict[url]["incomingLinks"] = [[predURL,1]]
                     
             else: 
-                frontierDict[url]["incomingLinks"].append(predURL)
+                frontierDict[url]["incomingLinks"].append([predURL, score])
                         
 
     
@@ -1215,15 +1232,18 @@ def frontierRead(info, url, schedule):
     info["incoming"] = frontierDict[url]["incomingLinks"]
     info["linkingDepth"] = frontierDict[url]["linkingDepth"]
     info["domainLinkingDepth"] = frontierDict[url]["domainLinkingDepth"]
-    info["tueEngScore"] = 1 
     info["outgoing"] = extractURLs(rawHtml, url)
     
+    info["tueEngScore"] = metr.metric(info, url)
     if info["tueEngScore"] >0.5:
-        if info["domainLinkingDepth"]<4 and info["linkingDepth"]<2:
+        # why  info["domainLinkingDepth"]<5 ? Well the the amount of links
+        # to get from the main page of uni tübingen to the webpage of an computer 
+        # science professor is roughly 5
+        if info["domainLinkingDepth"]<6 and info["linkingDepth"]<5:
             #if len(info["outgoing"]) == 0:
              #       raise Error(f"sucessorUrl in None, the outgoing list is {url}")
             for successorUrl in info["outgoing"]:
-                frontierWrite(successorUrl,url)
+                frontierWrite(successorUrl,url, info["tueEngScore"])
     
     moveAndDel(url, "success")
     cachedUrls[url] = info
@@ -1290,7 +1310,7 @@ def inputReaction():
              print(f"the responseHttpsErrorTracker has {len(responseHttpErrorTracker)} entries")
              
         if cmd == "cachedUrls":
-             print(f"the responseHttpsErrorTracker has {len(cachedUrls)} entries")
+             print(f"the there are {len(cachedUrls)} urls in cachedUrls")
              
         if cmd == "disabledUrls":
              print(f"there are  {len(disallowedURLCache)} blocked Urls so far")
@@ -1298,15 +1318,12 @@ def inputReaction():
         if cmd == "disabledDomains":
              print(f"there are  {len(disallowedDomainsCache)} blocked domains so far")
              
-    
-             
         
-                 
-                 
-                 
-        if cmd == "noResponses":
-            for url in noResponseAtAll:
-                print(url)
+        # export the list of disallowed domains (just the domain- names)   
+        if cmd == "exportDisallowedDomains":
+             print(f"exporting the disallowe domains as a csv file into {"disallowedDomanis.csv"}")
+             expCsv(disallowedDomainsCache, "disallowedDomains.csv")
+             
             
      
 
@@ -1317,7 +1334,7 @@ def inputReaction():
 # gets a list of urls, creates frontier- items from that with initial values 
 def frontierInit(lst):
     for url in lst:
-        frontierWrite(url,None)
+        frontierWrite(url,None,1)
         
     
 
@@ -1327,7 +1344,7 @@ def frontierInit(lst):
 # gets the initial seed list as input
 def crawler(lst):
     # IMPORTANT: Activate this in order to load the earlier frontier from the database
-    # loadFrontier()
+    #loadFrontier()
     frontierInit(lst)
     counter = 0
     while len(frontier) !=0 and inputDict["crawlingAllowed"]:
@@ -1359,11 +1376,11 @@ def crawler(lst):
     #storeCache(True)
     
     # IMPORTANT: Activate this, in order to store the frontier into the database, when the program stops
-    # storeFrontier()
+    #storeFrontier()
     
     print(f"the actual number of cachedUrls: {len(cachedUrls)}")
     print(f"the actual number of errors: {len(responseHttpErrorTracker)}")
-    print(f"the size of the frontier: {len(cachedUrls)}")
+    print(f"the size of the frontier: {len(frontier)}")
     print(f"the actual number disallowedUrls: {len(disallowedURLCache)}")
     print(f"the actual number disallowedDomains: {len(disallowedDomainsCache)}")
 
@@ -1383,17 +1400,17 @@ def runCrawler(lst):
             print("[MAIN] crawler finished")
             
             
-            print( crawlerDB.execute(f"SELECT MAX(linkingDepth) FROM urlsDB ").fetchone())
-            print( crawlerDB.execute(f"SELECT MIN(linkingDepth) FROM urlsDB ").fetchone())
-            print( crawlerDB.execute(f"SELECT MAX(domainLinkingDepth) FROM urlsDB ").fetchone())
-            print( crawlerDB.execute(f"SELECT MIN(domainLinkingDepth) FROM urlsDB ").fetchone())
+            # print( crawlerDB.execute(f"SELECT MAX(linkingDepth) FROM urlsDB ").fetchone())
+            # print( crawlerDB.execute(f"SELECT MIN(linkingDepth) FROM urlsDB ").fetchone())
+            # print( crawlerDB.execute(f"SELECT MAX(domainLinkingDepth) FROM urlsDB ").fetchone())
+            # print( crawlerDB.execute(f"SELECT MIN(domainLinkingDepth) FROM urlsDB ").fetchone())
             crawlerDB.close()
 
             
 #%%
-runCrawler(["https://whatsdavedoing.com"])
-
-
+#this was for my own test purposes
+#runCrawler(["https://whatsdavedoing.com"])
+runCrawler(seed)
 
 
 # maybe useful for testing the http status_codes later on:
