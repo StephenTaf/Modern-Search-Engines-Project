@@ -3,8 +3,6 @@ import csv
 
 # Written completely by chat gpt, but the professor said it is allright, for such non- essential 
 # stuff
-
-
 def export_to_csv(data, filename):
     """Exports dicts, list of tuples, or list of dicts to a CSV file."""
     with open(filename, 'w', newline='', encoding='utf-8') as f:

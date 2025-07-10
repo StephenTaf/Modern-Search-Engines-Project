@@ -14,18 +14,16 @@ from datetime import datetime, timezone
 from dateutil.parser import parse
 from urllib.parse import urljoin, urlparse
 from UTEMA import UTEMA
-from bs4 import BeautifulSoup
 from heapdict import heapdict
-import crawlerMetric
 import threading
 import duckdb
 from pympler import asizeof
 import html
-import lxml
 import metric as metr
 from seed import Seed as seed
 from exportCsv import export_to_csv as expCsv 
 import json
+from parsingStuff import parseText as getText
 
 
 
@@ -105,6 +103,10 @@ domainDelaysFrontier = {}
 
 # contains the UTEMA - averaged response times an the UTEMA- data per domain (for speed optimisation)
 responseTimesPerDomain = {}
+
+
+# here everything catched by the extractUrls function lands, that raises an error even in url- translation already
+strangeUrls = []
 
 # contains entries of form <domain-name>:
 robotsTxtInfos = {}
@@ -194,8 +196,23 @@ disallowedDomainsCache = {}
 # This passage is under development
 #::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
 
+
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+siteMapPatterns = [
+    r"sitemap.*\.xml$",       # sitemap.xml, sitemap-1.xml, sitemap_news.xml
+    r"/sitemap/?$",           # /sitemap or /sitemap/
+    r"sitemap_index.*\.xml$", # sitemap_index.xml
+]
+
+# we really don't want to crawl sitemaps, because if we do we might loose the actual structure of the website,
+# which we will use for our scoring system
+def isSitemapUrl(url: str) -> bool:
+    url = url.lower()
+    return any(re.search(p, url) for p in siteMapPatterns)
+
+        
+    
     
 
 # Given a list of (relative) urls and a comparison url, which one is the 
@@ -370,7 +387,7 @@ def putInStorage(list, tableName):
 #......................................
 #all about urlsDB
 #......................................
-crawlerDB = duckdb.connect("crawlerDBs.duckdb")
+crawlerDB = duckdb.connect("crawlerDB.duckdb")
 
 #Create the tables, if they don't already exist
 crawlerDB.execute("""
@@ -400,10 +417,17 @@ crawlerDB.execute("""
     """)
 
 
+crawlerDB.execute("""
+    CREATE TABLE IF NOT EXISTS strangeUrls (
+        id BIGINT PRIMARY KEY,
+        url TEXT,
+        received DOUBLE)
+    """)
 
 
-def storeFrontier():
-    
+        
+
+def storeFrontier(): 
     frontierId = 0
     for url in frontier:
         crawlerDB.execute(
@@ -419,7 +443,8 @@ def storeFrontier():
                 frontierDict[url]["domainLinkingDepth"],
                 frontierDict[url]["linkingDepth"]))
         frontierId +=1
-        
+
+     
 
 
 # stores the disallowedDomainsCache, and the disallowedURLCache, 
@@ -466,10 +491,24 @@ def getLastStoredId(table):
       last_id = result[0] if result[0] is not None else 0
       
       return last_id
+  
+  
+def storeStrangeUrls():
+    id = getLastStoredId("disallowedDomains")+1
+    for url in strangeUrls:
+        data = strangeUrls[url]
+        crawlerDB.execute(
+            """
+            INSERT INTO strangeUrls
+            (id, strangeUrls, received)
+            VALUES (?,?,?)
+            """,
+        (id,  url, time.ctime()))
+        id = id+1
 
 
 def storeCache(forced=False):
-    id = getLastStoredId("urlsDB")
+    id = getLastStoredId("urlsDB") + 1
     if len(cachedUrls) > 20_000 or forced:
         rows = []                       # collect rows first
 
@@ -492,7 +531,7 @@ def storeCache(forced=False):
                     data["linkingDepth"],
                     data["tueEngScore"]))
             id = id+1
-
+    if not forced:
         cachedUrls.clear()
         
 
@@ -1023,11 +1062,22 @@ def handleCodes(url, code, location, info):
 # (not the text- body of an error- http - request),
 # we extract all the urls we can find from this page
 #%%%
-def extractURLs(text,url):
-     urls = re.findall(r'''<a .*?href\s*=\s*(".+?"|'.+?').*?\s*>[^<]*</a>''', text, re.DOTALL)
+# does search for clickable urls in both html and xml 
+def extractURLs(text,baseUrl):
+     urls = re.findall(r'''href\s*=\s*(".+?"|'.+?')''', text, re.DOTALL)
      urls = [a[1:-1] for a in urls if a[1:-1].startswith(("/","http"))]
-     full_urls = [urljoin(url, a) for a in urls]
+     full_urls = []
+     for url in urls:
+        try:
+            full_urls.append(urljoin(baseUrl, url) )
+        except ValueError:
+            strangeUrls.append(url)
+            
      full_urls = [html.unescape(a) for a in full_urls]
+     
+     # we don't wanit urls linking to sitemaps, because we decided to 
+     # crawl site- structure aware (we store the depth of a link inside a site in cachedUrls[url]["linkingDepth"])
+     full_urls = [url for url in full_urls if not isSitemapUrl(url)]
      return full_urls
 
  #%%
@@ -1210,6 +1260,7 @@ def frontierRead(info, url, schedule):
             retry(response.headers.get("Retry-value"))
         location = response.headers.get("Location")
         valid, url = statusCodesHandler(url,location, response.status_code,info)
+        contentType = response.headers.get("Content-Type", "")
     else:
         valid, url = statusCodesHandler(url,None,None,info)
 
@@ -1227,7 +1278,8 @@ def frontierRead(info, url, schedule):
         
     rawHtml = response.text
     info["title"] = searchText(rawHtml,"<title>", "</title>",[] ) 
-    info["text"] = BeautifulSoup(rawHtml, "html.parser").get_text()
+    text = getText(rawHtml, contentType)
+    info["text"] = text
     info["lastFetch"] = time.time()
     info["incoming"] = frontierDict[url]["incomingLinks"]
     info["linkingDepth"] = frontierDict[url]["linkingDepth"]
@@ -1321,7 +1373,7 @@ def inputReaction():
         
         # export the list of disallowed domains (just the domain- names)   
         if cmd == "exportDisallowedDomains":
-             print(f"exporting the disallowe domains as a csv file into {"disallowedDomanis.csv"}")
+             print(f"exporting the disallowe domains as a csv file into {'disallowedDomanis.csv'}")
              expCsv(disallowedDomainsCache, "disallowedDomains.csv")
              
             
@@ -1344,7 +1396,7 @@ def frontierInit(lst):
 # gets the initial seed list as input
 def crawler(lst):
     # IMPORTANT: Activate this in order to load the earlier frontier from the database
-    #loadFrontier()
+    loadFrontier()
     frontierInit(lst)
     counter = 0
     while len(frontier) !=0 and inputDict["crawlingAllowed"]:
@@ -1377,9 +1429,12 @@ def crawler(lst):
     
     # IMPORTANT: Activate this, in order to store the frontier into the database, when the program stops
     #storeFrontier()
+    #IMPORTANT: Activate this, in order to store a list of strings that could not have been detected as urls
+    # but still where in href="..."
+    #storeStrangeUrls()
     
     print(f"the actual number of cachedUrls: {len(cachedUrls)}")
-    print(f"the actual number of errors: {len(responseHttpErrorTracker)}")
+    print(f"the actual number of tracked websites (because of http- statuscode): {len(responseHttpErrorTracker)}")
     print(f"the size of the frontier: {len(frontier)}")
     print(f"the actual number disallowedUrls: {len(disallowedURLCache)}")
     print(f"the actual number disallowedDomains: {len(disallowedDomainsCache)}")
@@ -1396,7 +1451,7 @@ def runCrawler(lst):
             crawler(lst)
             # If you want to save the frontier or the urlsDB as csv, activate either
             #saveAsCsv("frontier", "id, schedule, delay, url")
-            #saveAsCsv("urlsDB", "url, lastFetch")
+            saveAsCsv("urlsDB", "url, lastFetch")
             print("[MAIN] crawler finished")
             
             
@@ -1410,8 +1465,12 @@ def runCrawler(lst):
 #%%
 #this was for my own test purposes
 #runCrawler(["https://whatsdavedoing.com"])
-runCrawler(seed)
 
+runCrawler(seed)
+# print(crawlerDB.execute(
+#     "SELECT url, text FROM urlsDB WHERE url = ?",
+#     ("https://tuenews.de/en/latest-news-english/",)
+# ).fetchone())
 
 # maybe useful for testing the http status_codes later on:
 # https://the-internet.herokuapp.com/status_codes/200
