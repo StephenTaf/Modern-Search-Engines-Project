@@ -9,12 +9,13 @@ from indexer.embedder import TextEmbedder
 from indexer.indexer import Indexer
 import config as cfg
 import logging
+
 class Retriever:
     """
     Retriever class for hybrid search using BM25 and embeddings.
     """
     
-    def __init__(self, bm25: BM25, embedder: TextEmbedder, indexer: Indexer, db_path: str = cfg.DB_PATH):
+    def __init__(self, embedder: TextEmbedder, indexer: Indexer, db_path: str = cfg.DB_PATH, bm25: BM25 = None):
         """
         Initialize the retriever with a DuckDB connection, BM25 instance, and optional embedding model.
         """
@@ -22,7 +23,63 @@ class Retriever:
         self.bm25 = bm25
         self.embedder = embedder
         self.indexer = indexer
-
+    def quick_search(self, query: str, top_k: int = 10, alpha: float = 0.5, max_candidates: int = cfg.MAX_CANDIDATES):
+        
+        results = self.vdb.execute(f"""
+            WITH top_candidates AS (
+                SELECT sentence_id,  array_negative_inner_product(embedding, embed($q)) AS similarity
+                FROM embeddings
+                ORDER BY similarity
+                LIMIT {max_candidates}
+            )
+            SELECT sentences_optimized.doc_id, sentences_optimized.sentence_text, -1*top_candidates.similarity as similarity
+            FROM top_candidates
+            JOIN sentences_optimized ON (top_candidates.sentence_id = sentences_optimized.sentence_id)
+            ORDER BY similarity DESC
+            LIMIT {max_candidates}""",
+            {"q": query}
+        ).fetchall()
+        # Convert results to a list of dictionaries
+        results_list = []
+        unique_doc_ids = set()
+        for doc_id, sentence_text, similarity in results:
+            unique_doc_ids.add(doc_id)
+            results_list.append({
+                'doc_id': doc_id,
+                'sentence': sentence_text,
+                # 'title': title,
+                # 'url': url,
+                # 'text': doc_text,
+                'similarity': similarity
+            })
+        doc_data = self.vdb.execute("""
+            SELECT id, url, title, text
+            FROM urlsDB
+            WHERE id IN ({})
+        """.format(','.join(['?'] * len(unique_doc_ids))), list(unique_doc_ids)).fetchall()
+        doc_dict = {doc_id: {'url': url, 'title': title, 'text': text} for doc_id, url, title, text in doc_data}
+        # Add document metadata to results
+        for result in results_list:
+            doc_id = result['doc_id']
+            if doc_id in doc_dict:
+                result.update(doc_dict[doc_id])
+            else:
+                result['url'] = None
+                result['title'] = None
+                result['text'] = None
+        # Sort by similarity score
+        results_list.sort(key=lambda x: x['similarity'], reverse=True)
+        # Limit to top_k results
+        return results_list[:top_k]
+    # doc_results.append({
+    #                 'doc_id': doc_id,
+    #                 'url': sentence_scores[0]['url'],
+    #                 'title': sentence_scores[0]['title'],
+    #                 'max_score': sentence_scores[0]['hybrid_score'],
+    #                 'avg_score': np.mean([s['hybrid_score'] for s in sentence_scores]),
+    #                 'matching_sentences': len(sentence_scores),
+    #                 'best_sentences': sentence_scores[:3]
+    #             })
     def search(self, query: str, top_k: int = 10, alpha: float = 0.5, max_candidates: int = cfg.MAX_CANDIDATES) -> List[Dict]:
             """
             Memory-efficient hybrid search

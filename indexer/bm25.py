@@ -3,7 +3,9 @@ import math
 from collections import defaultdict, Counter
 from tqdm import tqdm
 import logging
-
+import config as cfg
+import duckdb
+from typing import List
 class BM25:
     """Memory-efficient BM25 that stores data in database"""
     def __init__(self, db_connection, k1=1.5, b=0.75):
@@ -14,6 +16,15 @@ class BM25:
         self.avgdl = 0
         self._setup_bm25_tables()
         self._load_stats_from_db()
+        try:
+            import spacy
+            self.nlp = spacy.load('en_core_web_sm')
+        except OSError:
+            logging.warning("spaCy model 'en_core_web_sm' not found. Downloading...")
+            import spacy.cli
+            spacy.cli.download('en_core_web_sm')
+            self.nlp = spacy.load('en_core_web_sm')
+            logging.info("spaCy model 'en_core_web_sm' downloaded successfully.")
         
     def _load_stats_from_db(self):
         """Load corpus statistics from database if available"""
@@ -70,24 +81,55 @@ class BM25:
         # Create indexes for faster lookups
         self.vdb.execute("CREATE INDEX IF NOT EXISTS idx_bm25_sentence_terms_term ON bm25_sentence_terms(term);")
     
-    def fit(self, tokenized_sentences):
+    def get_all_tokenized_docs(self, batch_size=cfg.DEFAULT_BATCH_SIZE):
+        """Retrieve all tokenized sentences from the database"""
+        doc_count = self.vdb.execute(f"SELECT COUNT(*) FROM {cfg.DB_TABLE}").fetchone()[0]
+        logging.info(f"Found {doc_count} documents to index")
+        
+        offset = 0
+        all_tokenized_docs = []
+        with tqdm(total=doc_count, desc="Processing documents for BM25") as pbar:
+            while offset < doc_count:
+                docs = self.vdb.execute(
+                    f"SELECT id, title, text FROM {cfg.DB_TABLE} LIMIT ? OFFSET ?", 
+                    [batch_size, offset]
+                ).fetchall()
+                if not docs:
+                    break
+                batch_tokenized = []
+                for doc_id, title, text in docs:
+                    full_text = f"{title or ''} {text or ''}".strip()
+                    if not full_text:
+                        continue
+                    
+                    # Tokenize the text (this should be replaced with actual tokenization logic)
+                    tokens = self._tokenize_text(full_text)
+                    batch_tokenized.append(tokens)
+        all_tokenized_docs.extend(batch_tokenized)
+    
+    def fit(self):
         """Fit BM25 and store data in database"""
+        if self.corpus_size > 0:
+            logging.info("BM25 already fitted. Skipping.")
+            return
+        logging.info("Fitting BM25...")
+        # Get all tokenized sentences from the database
+        tokenized_docs = self.get_all_tokenized_docs()
         logging.info("Clearing existing BM25 data...")
         self.vdb.execute("DELETE FROM bm25_terms")
         self.vdb.execute("DELETE FROM bm25_sentence_terms") 
         self.vdb.execute("DELETE FROM bm25_sentence_stats")
         
-        self.corpus_size = len(tokenized_sentences)
-        doc_lengths = [len(doc) for doc in tokenized_sentences]
+        self.corpus_size = len(tokenized_docs)
+        doc_lengths = [len(doc) for doc in tokenized_docs]
         self.avgdl = sum(doc_lengths) / len(doc_lengths) if doc_lengths else 0
         self._save_stats_to_db()
         logging.info("Computing term frequencies...")
-        # Calculate document frequencies and store term frequencies
         doc_freqs = {}
         sentence_data = []
         sentence_term_data = []
         
-        for sent_id, tokens in enumerate(tqdm(tokenized_sentences, desc="Processing sentences")):
+        for sent_id, tokens in enumerate(tqdm(tokenized_docs, desc="Processing docs")):
             sentence_data.append((sent_id, len(tokens)))
             
             # Count term frequencies in this sentence
@@ -173,3 +215,10 @@ class BM25:
         top_sentences = sorted(sentence_scores.items(), key=lambda x: x[1], reverse=True)[:limit]
         logging.debug(f"BM25 Top sentences: {top_sentences[:5]}")
         return top_sentences
+    
+    def _tokenize_text(self, text: str) -> List[str]:
+        """Tokenize text using spaCy or fallback to basic tokenization"""
+        
+        doc = self.nlp(text)
+        tokens = [token.lemma_.lower() for token in doc 
+                    if not token.is_stop and not token.is_punct and token.is_alpha]
