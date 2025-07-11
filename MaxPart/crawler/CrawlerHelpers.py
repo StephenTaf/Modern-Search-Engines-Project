@@ -17,13 +17,15 @@ from UTEMA import UTEMA
 from heapdict import heapdict
 import threading
 import duckdb
-from pympler import asizeof
+
 import html
 import metric as metr
 from seed import Seed as seed
 from exportCsv import export_to_csv as expCsv 
 import json
 from parsingStuff import parseText as getText
+from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 
@@ -509,28 +511,30 @@ def storeStrangeUrls():
 
 def storeCache(forced=False):
     id = getLastStoredId("urlsDB") + 1
-    if len(cachedUrls) > 20_000 or forced:
-        rows = []                       # collect rows first
-
-        for url in cachedUrls:
-            data = cachedUrls[url]
-            crawlerDB.execute(
-                """
+    if forced:
+        values = []
+        for url, data in cachedUrls.items():
+            values.append((
+                id,
+                url,
+                data["title"],
+                data["text"],
+                data["lastFetch"],
+                data["outgoing"],
+                json.dumps(data["incoming"]),
+                data["domainLinkingDepth"],
+                data["linkingDepth"],
+                data["tueEngScore"]
+            ))
+            id += 1
+        if values:
+            crawlerDB.executemany("""
                 INSERT INTO urlsDB
                 (id, url, title, text, lastFetch, outgoing, incoming,
                 domainLinkingDepth, linkingDepth, tueEngScore)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-            ( id, url,
-                    data["title"],
-                    data["text"],
-                    data["lastFetch"],
-                    data["outgoing"],
-                    json.dumps(data["incoming"]),
-                    data["domainLinkingDepth"],
-                    data["linkingDepth"],
-                    data["tueEngScore"]))
-            id = id+1
+            """, values)
+        cachedUrls.clear()
     if not forced:
         cachedUrls.clear()
         
@@ -1247,58 +1251,94 @@ def frontierWrite(url, predURL, score):
 # statusCodeHandler), or after too many rescheduling, just deleted, and 
 # in some cases it even goes into the disalloweURLCache, or the domain 
 # goes into the disallowedDomainsCache, for mor information see handleCodes). Further if the request works out, generated information is stored in cachedURLs
+
+cache_lock = threading.Lock()
+frontier_lock = threading.Lock()
+error_lock = threading.Lock()
+
 def frontierRead(info, url, schedule):
-    wait = schedule -time.time()
+    """Process a single URL - now thread-safe"""
+    wait = schedule - time.time()
     if wait > 0:
+        print(f"Waiting for {wait} seconds before processing {url}")
         time.sleep(wait)
     
     response = getHttp(url)
     
     if response:
         code = response.status_code
+        print(f" URL: {url} : {code} ")
         if response.headers.get("Retry-value"):
             retry(response.headers.get("Retry-value"))
         location = response.headers.get("Location")
-        valid, url = statusCodesHandler(url,location, response.status_code,info)
+        valid, url = statusCodesHandler(url, location, response.status_code, info)
         contentType = response.headers.get("Content-Type", "")
     else:
-        valid, url = statusCodesHandler(url,None,None,info)
+        valid, url = statusCodesHandler(url, None, None, info)
 
-        
- 
-    
     if not valid:
-        return
+        return url, None  # Return for tracking failed URLs
     
+    # Create URL info structure
+    url_info = {
+        "title": "", 
+        "text": "",
+        "lastFetch": time.time(), 
+        "outgoing": [], 
+        "incoming": [],
+        "domainLinkingDepth": 5, 
+        "linkingDepth": 50, 
+        "tueEngScore": 0.0
+    }
     
-    cachedUrls[url] =  {"title": "", "text": "","lastFetch": time.time(), "outgoing": [], "incoming": [],
-                                       "domainLinkingDepth":5, "linkingDepth": 50, "tueEngScore": 0.0}
-        
-    info = cachedUrls[url]
-        
+    # Parse HTML content
     rawHtml = response.text
-    info["title"] = searchText(rawHtml,"<title>", "</title>",[] ) 
-    text = getText(rawHtml, contentType)
-    info["text"] = text
-    info["lastFetch"] = time.time()
-    info["incoming"] = frontierDict[url]["incomingLinks"]
-    info["linkingDepth"] = frontierDict[url]["linkingDepth"]
-    info["domainLinkingDepth"] = frontierDict[url]["domainLinkingDepth"]
-    info["outgoing"] = extractURLs(rawHtml, url)
+    soup = BeautifulSoup(rawHtml, "html.parser")
+    title = soup.title.text.strip() if soup.title else ""
+    text = " ".join(
+        t.get_text(" ", strip=True)
+        for t in soup.find_all(["p", "h1", "h2", "h3", "h4", "h5", "h6"])
+    )
     
-    info["tueEngScore"] = metr.metric(info, url)
-    if info["tueEngScore"] >0.5:
-        # why  info["domainLinkingDepth"]<5 ? Well the the amount of links
-        # to get from the main page of uni tübingen to the webpage of an computer 
-        # science professor is roughly 5
-        if info["domainLinkingDepth"]<6 and info["linkingDepth"]<5:
-            #if len(info["outgoing"]) == 0:
-             #       raise Error(f"sucessorUrl in None, the outgoing list is {url}")
-            for successorUrl in info["outgoing"]:
-                frontierWrite(successorUrl,url, info["tueEngScore"])
+    # Update URL info
+    url_info["title"] = title
+    url_info["text"] = text
+    url_info["lastFetch"] = time.time()
+    url_info["incoming"] = frontierDict[url]["incomingLinks"]
+    url_info["linkingDepth"] = frontierDict[url]["linkingDepth"]
+    url_info["domainLinkingDepth"] = frontierDict[url]["domainLinkingDepth"]
+    url_info["outgoing"] = extractURLs(rawHtml, url)
     
-    moveAndDel(url, "success")
-    cachedUrls[url] = info
+    url_info["tueEngScore"] = metr.metric(url_info, url)
+    
+    return url, url_info
+
+def process_batch_results(results):
+    """Process results from a batch of parallel requests"""
+    new_urls_to_add = []
+    
+    for url, url_info in results:
+        if url_info is None:
+            continue  # Skip failed URLs
+            
+        # Thread-safe update to cachedUrls
+        with cache_lock:
+            cachedUrls[url] = url_info
+        
+        # Check if we should add outgoing URLs to frontier
+        if url_info["tueEngScore"] > 0.5:
+            if url_info["domainLinkingDepth"] < 6 and url_info["linkingDepth"] < 5:
+                for successorUrl in url_info["outgoing"]:
+                    new_urls_to_add.append((successorUrl, url, url_info["tueEngScore"]))
+        
+        # Move URL to success (assuming this is thread-safe or needs to be made so)
+        moveAndDel(url, "success")
+     
+    
+    # Add new URLs to frontier (thread-safe)
+    with frontier_lock:
+        for successorUrl, parent_url, score in new_urls_to_add:
+            frontierWrite(successorUrl, parent_url, score)
         
         
         
@@ -1394,27 +1434,71 @@ def frontierInit(lst):
 # this is the crawler function, it maintains the caches (puts them into storage)
 # if necessary, and opens
 # gets the initial seed list as input
-def crawler(lst):
+
+
+def crawler(lst, max_workers=50, batch_size=100):
+    """
+    Parallelized web crawler
+    
+    Args:
+        lst: Initial list of URLs
+        max_workers: Maximum number of concurrent threads
+        batch_size: Number of URLs to process in each batch
+    """
     # IMPORTANT: Activate this in order to load the earlier frontier from the database
     loadFrontier()
     frontierInit(lst)
+    
     counter = 0
-    while len(frontier) !=0 and inputDict["crawlingAllowed"]:
-        # IMPORTANT: Want to store the cachedURLs into the dabase, after a certain amount of entries are reached
-        # (currently 20 000, which should be doable by every system with 4GB RAM (still usable during it,
-        # takes accordig to chatGPT only 1 GB ram))
-        #storeCache()
-        for i in range(min(100, len(frontier))):
-            counter +=1
-            url, schedule  = frontier.popitem()
-            info = frontierDict[url]
-            frontierRead(info, url, schedule)
-            len4 = len(responseHttpErrorTracker)
-            len5 = len(frontier)
-            if len(frontier) == 0 or not inputDict["crawlingAllowed"]:
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        while len(frontier) != 0 and inputDict["crawlingAllowed"]:
+            # IMPORTANT: Want to store the cachedURLs into the database
+            storeCache(True)
+            
+            # Prepare batch of URLs to process
+            batch_urls = []
+            batch_info = []
+            batch_schedules = []
+            
+            with frontier_lock:
+                for i in range(min(batch_size, len(frontier))):
+                    if len(frontier) == 0:
+                        break
+                    url, schedule = frontier.popitem()
+                    info = frontierDict[url]
+                    
+                    batch_urls.append(url)
+                    batch_info.append(info)
+                    batch_schedules.append(schedule)
+            
+            if not batch_urls:
                 break
+                
+            # Submit batch to thread pool
+            future_to_url = {
+                executor.submit(frontierRead, info, url, schedule): url
+                for url, info, schedule in zip(batch_urls, batch_info, batch_schedules)
+            }
+            
+            # Collect results as they complete
+            results = []
+            for future in as_completed(future_to_url):
+                url = future_to_url[future]
+                try:
+                    result = future.result()
+                    results.append(result)
+                    counter += 1
+                except Exception as exc:
+                    print(f'URL {url} generated an exception: {exc}')
+                    with error_lock:
+                        responseHttpErrorTracker[url] = str(exc)
+            
+            # Process all results from this batch
+            process_batch_results(results)
+            
+            # Progress reporting
             if counter % 100 == 0:
-                counter = 0
                 print("---------------------------------------------------")
                 print(f"the actual number of cachedUrls: {len(cachedUrls)}")
                 print(f"the actual number of errors: {len(responseHttpErrorTracker)}")
@@ -1422,16 +1506,19 @@ def crawler(lst):
                 print(f"the actual number disallowedUrls: {len(disallowedURLCache)}")
                 print(f"the actual number disallowedDomains: {len(disallowedDomainsCache)}")
                 print("---------------------------------------------------")
-                
             
-     # IMPORTANT: Activate this in order to store cachedUrls into the database, when the program stops
-    #storeCache(True)
+            # Check if we should continue
+            if len(frontier) == 0 or not inputDict["crawlingAllowed"]:
+                break
     
-    # IMPORTANT: Activate this, in order to store the frontier into the database, when the program stops
-    #storeFrontier()
-    #IMPORTANT: Activate this, in order to store a list of strings that could not have been detected as urls
-    # but still where in href="..."
-    #storeStrangeUrls()
+    # IMPORTANT: Activate this in order to store cachedUrls into the database
+    storeCache(True)
+    
+    # IMPORTANT: Activate this, in order to store the frontier into the database
+    storeFrontier()
+    
+    # IMPORTANT: Activate this, in order to store strange URLs
+    storeStrangeUrls()
     
     print(f"the actual number of cachedUrls: {len(cachedUrls)}")
     print(f"the actual number of tracked websites (because of http- statuscode): {len(responseHttpErrorTracker)}")

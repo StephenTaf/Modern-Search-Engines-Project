@@ -1,5 +1,4 @@
 from bs4 import BeautifulSoup
-import lxml
 import re
 
 def is_useful_soup(soup):
