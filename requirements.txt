@@ -1,2 +1,14 @@
-numpy==2.3.1
-scikit_learn==1.7.0
+# ------------- core scientific stack (CPU/GPU compatible) -------------
+numpy>=1.26,<2.0
+scikit-learn==1.7.0
+
+# ------------- dense-retrieval stack -----------------------------------
+sentence-transformers>=2.6.0   # pulls HuggingFace + TorchText deps
+
+# choose ONE of the two lines below
+faiss-gpu-cu12==1.11.0         # GPU build, needs CUDA 12.x
+# faiss-cpu==1.7.4             # ← uncomment if you’re on CPU only
+
+# ------------- PyTorch with CUDA 12.1 (optional, matches faiss build) ---
+# pick the wheel that matches your GPU / driver.  Example:
+#torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
