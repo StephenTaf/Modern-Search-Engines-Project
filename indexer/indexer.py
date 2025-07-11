@@ -108,7 +108,7 @@ class Indexer:
                 chunk_id = start_id + i + j
                 embedding_data.append((chunk_id, embedding.astype(np.float32)))
             
-            logging.info(f"Processed {len(batch)} embeddings in {time.time() - _tik:.2f} seconds")
+            logging.debug(f"Processed {len(batch)} embeddings in {time.time() - _tik:.2f} seconds")
 
         # Convert to Arrow-backed DataFrame
         if embedding_data:
@@ -121,7 +121,7 @@ class Indexer:
             })
 
             self.vdb.execute("INSERT INTO embeddings SELECT * FROM df")
-            logging.info(f"Stored {len(embedding_data)} embeddings in {time.time() - _tik:.2f} seconds")
+            logging.debug(f"Stored {len(embedding_data)} embeddings in {time.time() - _tik:.2f} seconds")
         
     
                 

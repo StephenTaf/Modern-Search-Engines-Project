@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"name": "Modern-Search-Engines-Project",
+			"path": "../.."
+		}
+	],
+	"settings": {
+		"python.defaultInterpreterPath": "/Users/maximilianselzer/.pyenv/versions/3.9.18/bin/python"
+	}
+}

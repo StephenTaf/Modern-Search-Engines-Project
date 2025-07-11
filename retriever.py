@@ -23,41 +23,60 @@ class Retriever:
         self.bm25 = bm25
         self.embedder = embedder
         self.indexer = indexer
-    def quick_search(self, query: str, top_k: int = 10, alpha: float = 0.5, max_candidates: int = cfg.MAX_CANDIDATES):
+
+    def quick_search(self, query: str, top_k: int = 10, max_candidates: int = cfg.MAX_CANDIDATES, return_unique_docs: bool = False) -> List[Dict]:
+        """        Perform a quick ANN search
+        Returns a list of dictionaries with document metadata and scores.
+        """
         
         results = self.vdb.execute(f"""
             WITH top_candidates AS (
-                SELECT sentence_id,  array_negative_inner_product(embedding, embed($q)) AS similarity
+                SELECT chunk_id,  array_negative_inner_product(embedding, embed($q)) AS similarity
                 FROM embeddings
                 ORDER BY similarity
                 LIMIT {max_candidates}
             )
-            SELECT sentences_optimized.doc_id, sentences_optimized.sentence_text, -1*top_candidates.similarity as similarity
+            SELECT chunks_optimized.doc_id, chunks_optimized.chunk_text, -1*top_candidates.similarity as similarity
             FROM top_candidates
-            JOIN sentences_optimized ON (top_candidates.sentence_id = sentences_optimized.sentence_id)
+            JOIN chunks_optimized ON (top_candidates.chunk_id = chunks_optimized.chunk_id)
             ORDER BY similarity DESC
             LIMIT {max_candidates}""",
             {"q": query}
         ).fetchall()
+        
         # Convert results to a list of dictionaries
         results_list = []
         unique_doc_ids = set()
-        for doc_id, sentence_text, similarity in results:
+        doc_max_scores = {}  # Track max score per document for unique docs mode
+        
+        for doc_id, chunk_text, similarity in results:
             unique_doc_ids.add(doc_id)
-            results_list.append({
+            
+            result_item = {
                 'doc_id': doc_id,
-                'sentence': sentence_text,
-                # 'title': title,
-                # 'url': url,
-                # 'text': doc_text,
+                'sentence': chunk_text,
                 'similarity': similarity
-            })
+            }
+            
+            if return_unique_docs:
+                # Keep track of the best score for each document
+                if doc_id not in doc_max_scores or similarity > doc_max_scores[doc_id]['similarity']:
+                    doc_max_scores[doc_id] = result_item
+            else:
+                results_list.append(result_item)
+        
+        # If return_unique_docs is True, use only the best result per document
+        if return_unique_docs:
+            results_list = list(doc_max_scores.values())
+        
+        # Get document metadata
         doc_data = self.vdb.execute("""
             SELECT id, url, title, text
             FROM urlsDB
             WHERE id IN ({})
         """.format(','.join(['?'] * len(unique_doc_ids))), list(unique_doc_ids)).fetchall()
         doc_dict = {doc_id: {'url': url, 'title': title, 'text': text} for doc_id, url, title, text in doc_data}
+        
         # Add document metadata to results
         for result in results_list:
             doc_id = result['doc_id']
@@ -67,20 +86,14 @@ class Retriever:
                 result['url'] = None
                 result['title'] = None
                 result['text'] = None
+        
         # Sort by similarity score
         results_list.sort(key=lambda x: x['similarity'], reverse=True)
+        
         # Limit to top_k results
         return results_list[:top_k]
-    # doc_results.append({
-    #                 'doc_id': doc_id,
-    #                 'url': sentence_scores[0]['url'],
-    #                 'title': sentence_scores[0]['title'],
-    #                 'max_score': sentence_scores[0]['hybrid_score'],
-    #                 'avg_score': np.mean([s['hybrid_score'] for s in sentence_scores]),
-    #                 'matching_sentences': len(sentence_scores),
-    #                 'best_sentences': sentence_scores[:3]
-    #             })
-    def search(self, query: str, top_k: int = 10, alpha: float = 0.5, max_candidates: int = cfg.MAX_CANDIDATES) -> List[Dict]:
+
+    def hybrid_search(self, query: str, top_k: int = 10, alpha: float = 0.5, max_candidates: int = cfg.MAX_CANDIDATES) -> List[Dict]:
             """
             Memory-efficient hybrid search
             """

@@ -1,3 +1,39 @@
+# ------------- core scientific stack (CPU/GPU compatible) -------------
+numpy>=1.26,<2.0
+scikit-learn==1.7.0
+
+# ------------- dense-retrieval stack -----------------------------------
+sentence-transformers>=2.6.0   # pulls HuggingFace + TorchText deps
+
+# choose ONE of the two lines below
+faiss-gpu-cu12==1.11.0         # GPU build, needs CUDA 12.x
+# faiss-cpu==1.7.4             # ← uncomment if you’re on CPU only
+
+# ------------- PyTorch with CUDA 12.1 (optional, matches faiss build) ---
+# pick the wheel that matches your GPU / driver.  Example:
+#torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+
+beautifulsoup4==4.13.4
+bs4==0.0.2
+duckdb==1.3.1
+HeapDict==1.0.1
+langdetect==1.0.9
+matplotlib==3.10.3
+numpy==2.3.1
+pandas==2.3.1
+pyarrow==20.0.0
+python-dateutil==2.9.0.post0
+regex==2024.11.6
+requests==2.32.4
+scikit-learn==1.7.0
+scipy==1.16.0
+sentence-transformers==5.0.0
+spacy==3.8.7
+torch==2.7.1
+tqdm==4.67.1
+transformers==4.53.1
+urllib3==2.5.0
+
 
 duckdb==1.3.1
 numpy==2.3.1

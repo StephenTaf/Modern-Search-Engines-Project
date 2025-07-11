@@ -26,7 +26,7 @@ def main():
     indexer_instance = indexer.Indexer(embedder=embedder, db_path=db_path)
     logging.info(f"Indexer initialized successfully in {time.time() - _tik:.2f} seconds.")
     # Index documents
-    indexer_instance.index_documents(batch_size=cfg.DEFAULT_BATCH_SIZE, embedding_batch_size=cfg.DEFAULT_EMBEDDING_BATCH_SIZE,force_reindex=True) 
+    indexer_instance.index_documents(batch_size=cfg.DEFAULT_BATCH_SIZE, embedding_batch_size=cfg.DEFAULT_EMBEDDING_BATCH_SIZE,force_reindex=False) 
     logging.info(f"Document indexing completed successfully in {time.time() - _tik:.2f} seconds.")
     # Initialize the retriever
     retriever_instance = Retriever(embedder, indexer_instance, db_path)
@@ -38,24 +38,17 @@ def main():
         if query.lower() in {"exit", "quit"}:
             print("Exiting search engine.")
             break
-        results = retriever_instance.quick_search(query, top_k=10)
+        results = retriever_instance.quick_search(query, top_k=10, return_unique_docs=True)
         if not results:
             print("No results found.")
         else:
             for i, result in enumerate(results, 1):
-                # print(f"\n{i}. {result['title']} (Score: {result['max_score']:.3f})")
-                # print(f"   URL: {result['url']}")
-                # print(f"   Matching sentences: {result['matching_sentences']}")
-                # print(f"   Best sentence: {result['best_sentences'][0]['sentence'][:200]}...")
-                # print(f"   BM25 Score: {result['best_sentences'][0]['bm25_score']:.3f}\n embedding Score: {result['best_sentences'][0]['embedding_score']:.3f}")
                  
                 print(f"\n{i}. {result['title'][:50]} (Score: {result['similarity']:.3f})")
                 print(f"   URL: {result['url']}")
-                # print(f"   Matching sentences: {result['matching_sentences']}")
-                print(f"   Best sentence: {result['sentence'][:100]}...")
+                print(f"   Best chunk: {result['sentence'][:200]}...")
                 print(f"   Document ID: {result['doc_id']}")
                 print(f"   Text: {result['text'].replace('\n','')[:100]}...")
-                # print(f"   BM25 Score: {result['best_sentences'][0]['bm25_score']:.3f}\n embedding Score: {result['best_sentences'][0]['embedding_score']:.3f}")
 
 
         

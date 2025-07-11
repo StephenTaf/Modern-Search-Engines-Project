@@ -22,9 +22,6 @@ class TextEmbedder:
         self.db_path = db_path
         self.vdb = duckdb.connect(db_path)    
         self.embedding_model = SentenceTransformer(embedding_model, device=device)
-        self.tokenizer = AutoTokenizer.from_pretrained(embedding_model)
-        self.model = AutoModel.from_pretrained(embedding_model).to(self.device)
-        self.model.eval()
         self._setup_database()
         self._setup_vector_index()
          
