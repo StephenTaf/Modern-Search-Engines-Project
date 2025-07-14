@@ -1,10 +1,11 @@
-import CrawlerHelpers
 import re
+import math
 from langdetect import detect
 from tuebingen_terms import (
     TUEBINGEN_PHRASES, CITY_TERMS, UNIVERSITY_TERMS, FACULTY_TERMS, ACADEMIC_TERMS
 )
 def incomingScore(incomingLinks):
+    from CrawlerHelpers import findUrl, readAndDelUrlInfo
     """
     Sum of tueEngScores of all incoming links.
     Each element in incomingLinks is a pair: (url, score) or (url, _).
@@ -14,7 +15,7 @@ def incomingScore(incomingLinks):
     for link in incomingLinks:
         url = link[0]
         score = link[1] if len(link) > 1 and link[1] is not None else \
-            (CrawlerHelpers.urlFrontier[url]["tueEngScore"] if url in CrawlerHelpers.urlFrontier else 0.0)
+            (readAndDelUrlInfo(url, delete=False)["tueEngScore"] if url in findUrl(url) else 0.0)
         total += score
     return total
 
@@ -113,6 +114,7 @@ def textScore(text):
 
 
 def metric(information, url):
+    
     """
     normalized relevance score
     """
@@ -157,6 +159,7 @@ def metric(information, url):
 
 
 def OfflineMetric(information):
+    from CrawlerHelpers import findUrl, readAndDelUrlInfo
     """
     Post-processing metric for final page relevance after crawling is complete.
     """
@@ -176,8 +179,8 @@ def OfflineMetric(information):
     out_count = 0
     #if outgoing scores are available later. 
     for out in outgoing:
-        out_url = out[0] if isinstance(out, (list, tuple)) else out
-        out_score += CrawlerHelpers.urlFrontier.get(out_url, {}).get("tueEngScore", 0.0)
+        out_url = out
+        out_score += readAndDelUrlInfo(out, delete=False) if findUrl(url) else math.exp(-2)
         out_count += 1
     if out_count:
         out_score = min(1.0, out_score / max_out)
