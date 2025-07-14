@@ -10,6 +10,7 @@ from indexer.indexer import Indexer
 import config as cfg
 import logging
 
+
 class Retriever:
     """
     Retriever class for hybrid search using BM25 and embeddings.
@@ -19,7 +20,7 @@ class Retriever:
         """
         Initialize the retriever with a DuckDB connection, BM25 instance, and optional embedding model.
         """
-        self.vdb = duckdb.connect(db_path)
+        self.vdb = duckdb.connect(db_path, read_only=True)
         self.bm25 = bm25
         self.embedder = embedder
         self.indexer = indexer
@@ -70,22 +71,22 @@ class Retriever:
             results_list = list(doc_max_scores.values())
         
         # Get document metadata
-        doc_data = self.vdb.execute("""
-            SELECT id, url, title, text
-            FROM urlsDB
-            WHERE id IN ({})
-        """.format(','.join(['?'] * len(unique_doc_ids))), list(unique_doc_ids)).fetchall()
-        doc_dict = {doc_id: {'url': url, 'title': title, 'text': text} for doc_id, url, title, text in doc_data}
+        # doc_data = self.vdb.execute("""
+        #     SELECT id, url, title, text
+        #     FROM urlsDB
+        #     WHERE id IN ({})
+        # """.format(','.join(['?'] * len(unique_doc_ids))), list(unique_doc_ids)).fetchall()
+        # doc_dict = {doc_id: {'url': url, 'title': title, 'text': text} for doc_id, url, title, text in doc_data}
         
-        # Add document metadata to results
-        for result in results_list:
-            doc_id = result['doc_id']
-            if doc_id in doc_dict:
-                result.update(doc_dict[doc_id])
-            else:
-                result['url'] = None
-                result['title'] = None
-                result['text'] = None
+        # # Add document metadata to results
+        # for result in results_list:
+        #     doc_id = result['doc_id']
+        #     if doc_id in doc_dict:
+        #         result.update(doc_dict[doc_id])
+        #     else:
+        #         result['url'] = None
+        #         result['title'] = None
+        #         result['text'] = None
         
         # Sort by similarity score
         results_list.sort(key=lambda x: x['similarity'], reverse=True)

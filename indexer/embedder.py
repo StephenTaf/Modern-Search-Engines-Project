@@ -9,7 +9,7 @@ from transformers import AutoTokenizer, AutoModel
 import torch
 import torch.nn.functional as F
 class TextEmbedder:
-    def __init__(self, db_path: str, embedding_model: str = cfg.EMBEDDING_MODEL):
+    def __init__(self, db_path: str, embedding_model: str = cfg.EMBEDDING_MODEL, read_only: bool = True):
         if torch.cuda.is_available():
             device = "cuda"
         elif torch.backends.mps.is_available():
@@ -20,34 +20,38 @@ class TextEmbedder:
         logging.info(f"Using device: {self.device}")
         
         self.db_path = db_path
-        self.vdb = duckdb.connect(db_path)    
+        self.vdb = duckdb.connect(db_path, read_only=read_only)    
         self.embedding_model = SentenceTransformer(embedding_model, device=device)
+        self.read_only = read_only
         self._setup_database()
         self._setup_vector_index()
          
     def _setup_database(self):
-        """Create optimized table structure"""
-        self.vdb.execute("""
-            CREATE TABLE IF NOT EXISTS chunks_optimized(
-              chunk_id BIGINT PRIMARY KEY,
-              doc_id      BIGINT,
-              chunk_text TEXT,
-              FOREIGN KEY (doc_id) REFERENCES urlsDB(id)
-            );
-        """)
         
-        # Create indexes
-        self.vdb.execute("CREATE INDEX IF NOT EXISTS idx_chunks_opt_doc_id ON chunks_optimized(doc_id);")
+        """Create optimized table structure"""
+        if not self.read_only:
+            self.vdb.execute("""
+                CREATE TABLE IF NOT EXISTS chunks_optimized(
+                chunk_id BIGINT PRIMARY KEY,
+                doc_id      BIGINT,
+                chunk_text TEXT,
+                FOREIGN KEY (doc_id) REFERENCES urlsDB(id)
+                );
+            """)
+            
+            # Create indexes
+            self.vdb.execute("CREATE INDEX IF NOT EXISTS idx_chunks_opt_doc_id ON chunks_optimized(doc_id);")
         
         # Separate table for embeddings 
         
     def _setup_vector_index(self):
-        self.vdb.execute(f"""
-            CREATE TABLE IF NOT EXISTS embeddings(
-              chunk_id BIGINT PRIMARY KEY,
-              embedding FLOAT[{cfg.EMBEDDING_DIMENSION}],
-            );
-        """)
+        if not self.read_only:
+            self.vdb.execute(f"""
+                CREATE TABLE IF NOT EXISTS embeddings(
+                chunk_id BIGINT PRIMARY KEY,
+                embedding FLOAT[{cfg.EMBEDDING_DIMENSION}],
+                );
+            """)
         self.vdb.execute(f"""
                          INSTALL vss;
                           LOAD vss;

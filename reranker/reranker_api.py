@@ -13,82 +13,101 @@ from pydantic import BaseModel
 from openai import OpenAI
 from transformers import AutoTokenizer
 import asyncio
+import duckdb
 
-# Database class for document indexing
 class Database:
     def __init__(self, data_path: str):
-        """Initialize database by loading JSON file with document records."""
+        """Initialize database by connecting to duckdb ."""
+        self.vdb = duckdb.connect(data_path, read_only=True)
         self.data_path = data_path
-        self.documents = []
-        self.doc_index = {}  # doc_id -> list of record indices
-        self.load_data()
-    
-    def load_data(self):
-        """Load documents from JSON file and build index."""
-        try:
-            with open(self.data_path, 'r', encoding='utf-8') as f:
-                self.documents = json.load(f)
-            
-            if not isinstance(self.documents, list):
-                raise ValueError("JSON file must contain a list of document records")
-            
-            # Build index: doc_id -> list of indices
-            self.doc_index = {}
-            for i, doc in enumerate(self.documents):
-                if not isinstance(doc, dict):
-                    raise ValueError(f"Document at index {i} must be a dictionary")
-                
-                required_fields = ['doc_id', 'title', 'url', 'text', 'similarity']
-                missing_fields = [field for field in required_fields if field not in doc]
-                if missing_fields:
-                    raise ValueError(f"Document at index {i} missing required fields: {missing_fields}")
-                
-                doc_id = str(doc['doc_id'])
-                if doc_id not in self.doc_index:
-                    self.doc_index[doc_id] = []
-                self.doc_index[doc_id].append(i)
-            
-            logger.info(f"Loaded {len(self.documents)} documents with {len(self.doc_index)} unique doc_ids from {self.data_path}")
-            
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Database file not found: {self.data_path}")
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON in database file: {e}")
-        except Exception as e:
-            raise ValueError(f"Error loading database: {e}")
     
     def get_documents_by_ids(self, doc_ids: Union[str, List[str]]) -> List[Dict]:
         """Get all documents matching the given doc_id(s)."""
         if isinstance(doc_ids, str):
             doc_ids = [doc_ids]
         
-        result = []
-        missing_ids = []
+        placeholders = ', '.join(['?'] * len(doc_ids))
+        query = f"SELECT CAST(id AS TEXT) AS id, title, url, text FROM urlsDB WHERE id IN ({placeholders})"
         
-        for doc_id in doc_ids:
-            if doc_id in self.doc_index:
-                # Get all documents with this doc_id
-                for index in self.doc_index[doc_id]:
-                    result.append(self.documents[index])
-            else:
-                missing_ids.append(doc_id)
+        results = self.vdb.execute(query, doc_ids).fetchall()
         
-        if missing_ids:
-            logger.warning(f"Documents not found for doc_ids: {missing_ids}")
+        return [{'doc_id': row[0], 'title': row[1], 'url': row[2], 'text': row[3]} for row in results]
+
+# Database class for document indexing
+# class Database:
+#     def __init__(self, data_path: str):
+#         """Initialize database by loading JSON file with document records."""
+#         self.data_path = data_path
+#         self.documents = []
+#         self.doc_index = {}  # doc_id -> list of record indices
+#         self.load_data()
+    
+#     def load_data(self):
+#         """Load documents from JSON file and build index."""
+#         try:
+#             with open(self.data_path, 'r', encoding='utf-8') as f:
+#                 self.documents = json.load(f)
+            
+#             if not isinstance(self.documents, list):
+#                 raise ValueError("JSON file must contain a list of document records")
+            
+#             # Build index: doc_id -> list of indices
+#             self.doc_index = {}
+#             for i, doc in enumerate(self.documents):
+#                 if not isinstance(doc, dict):
+#                     raise ValueError(f"Document at index {i} must be a dictionary")
+                
+#                 required_fields = ['doc_id', 'title', 'url', 'text', 'similarity']
+#                 missing_fields = [field for field in required_fields if field not in doc]
+#                 if missing_fields:
+#                     raise ValueError(f"Document at index {i} missing required fields: {missing_fields}")
+                
+#                 doc_id = str(doc['doc_id'])
+#                 if doc_id not in self.doc_index:
+#                     self.doc_index[doc_id] = []
+#                 self.doc_index[doc_id].append(i)
+            
+#             logger.info(f"Loaded {len(self.documents)} documents with {len(self.doc_index)} unique doc_ids from {self.data_path}")
+            
+#         except FileNotFoundError:
+#             raise FileNotFoundError(f"Database file not found: {self.data_path}")
+#         except json.JSONDecodeError as e:
+#             raise ValueError(f"Invalid JSON in database file: {e}")
+#         except Exception as e:
+#             raise ValueError(f"Error loading database: {e}")
+    
+    # def get_documents_by_ids(self, doc_ids: Union[str, List[str]]) -> List[Dict]:
+    #     """Get all documents matching the given doc_id(s)."""
+    #     if isinstance(doc_ids, str):
+    #         doc_ids = [doc_ids]
         
-        return result
+    #     result = []
+    #     missing_ids = []
+        
+    #     for doc_id in doc_ids:
+    #         if doc_id in self.doc_index:
+    #             # Get all documents with this doc_id
+    #             for index in self.doc_index[doc_id]:
+    #                 result.append(self.documents[index])
+    #         else:
+    #             missing_ids.append(doc_id)
+        
+    #     if missing_ids:
+    #         logger.warning(f"Documents not found for doc_ids: {missing_ids}")
+        
+    #     return result
     
-    def get_all_doc_ids(self) -> List[str]:
-        """Get list of all available doc_ids."""
-        return list(self.doc_index.keys())
+    # def get_all_doc_ids(self) -> List[str]:
+    #     """Get list of all available doc_ids."""
+    #     return list(self.doc_index.keys())
     
-    def get_document_count(self) -> int:
-        """Get total number of documents."""
-        return len(self.documents)
+    # def get_document_count(self) -> int:
+    #     """Get total number of documents."""
+    #     return len(self.documents)
     
-    def get_unique_doc_count(self) -> int:
-        """Get number of unique doc_ids."""
-        return len(self.doc_index)
+    # def get_unique_doc_count(self) -> int:
+    #     """Get number of unique doc_ids."""
+    #     return len(self.doc_index)
 
 # Global rate limiter state
 class RateLimiter:
@@ -121,7 +140,7 @@ class RateLimiter:
             self.request_times.append(current_time)
 
 # Load configuration
-def load_config(config_path: str = "config.yaml") -> dict:
+def load_config(config_path: str = "reranker/config.yaml") -> dict:
     """Load configuration from YAML file."""
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
@@ -179,10 +198,12 @@ logger.info("OpenAI client initialized successfully")
 
 class RerankRequest(BaseModel):
     doc_ids: List[str]  # List of document IDs to rerank
+    similarities: Optional[List[float]] = None  # Optional list of similarity scores for each document
     query: str
     window_size: int = config['sliding_window']['default_window_size']
     step_size: int = config['sliding_window']['default_step_size']
     top_n: int = config['sliding_window']['default_top_n']
+    call_api: Optional[bool] = True  # Whether to call the model for embeddings
 
 class DocumentScore(BaseModel):
     doc_id: str
@@ -364,7 +385,7 @@ async def rerank(request: RerankRequest):
     Rerank documents based on similarity to query using sliding window approach.
     """
     try:
-        logger.info(f"Processing rerank request for doc_ids: {request.doc_ids}")
+        logger.info(f"Processing rerank request for doc_ids: {request.doc_ids} with similarities: {request.similarities}")
         logger.info(f"Query: {request.query[:100]}{'...' if len(request.query) > 100 else ''}")
         logger.info(f"Window size: {request.window_size}, Step size: {request.step_size}, Top N: {request.top_n}")
         
@@ -377,6 +398,28 @@ async def rerank(request: RerankRequest):
         logger.info(f"Found {len(documents)} documents in database")
         
         query_text = request.query
+        if not request.call_api:
+            # use default sorting of request.similarities if provided
+            return RerankResponse(
+                document_scores=[
+                    DocumentScore(
+                        doc_id=str(doc['doc_id']),
+                        title=doc['title'],
+                        url=doc['url'],
+                        similarity_score=request.similarities[i] if request.similarities else 0.0,
+                        original_similarity=request.similarities[i] if request.similarities else 0.0
+                    ) for i, doc in enumerate(documents)
+                ],
+                top_windows= [WindowScore(
+                    text=doc['text'][:200],  # Use first 200 chars as snippet
+                    similarity_score=request.similarities[i] if request.similarities else 0.0,
+                    doc_id=str(doc['doc_id']),
+                    title=doc['title'],
+                    window_index=0  # No specific window index since we're not using sliding windows
+                ) for i, doc in enumerate(documents)],
+                total_documents=len(documents),
+                total_windows=0
+            )
         
         # Apply rate limiting for query embedding if enabled
         if config.get('rate_limiting', {}).get('enabled', False) and rate_limiter:
@@ -389,7 +432,7 @@ async def rerank(request: RerankRequest):
         all_windows = []  # will keep (doc_id, window_text, window_id)
         total_windows = 0
         
-        for doc in documents:
+        for idx, doc in enumerate(documents):
             logger.debug(f"Processing document: {doc['doc_id']}")
             # Tokenize document without special tokens initially
             doc_tokens = tokenize_text(doc['text'], add_special_tokens=False)
@@ -406,7 +449,7 @@ async def rerank(request: RerankRequest):
                     'window_id': i,
                     'title': doc['title'],
                     'url': doc['url'],
-                    'original_similarity': doc['similarity']
+                    'original_similarity': request.similarities[idx] if request.similarities else None
                 })
         
         logger.debug(f"Created {len(all_windows)} windows")
@@ -440,14 +483,14 @@ async def rerank(request: RerankRequest):
             ))
         
         # Create document scores using max similarity per document
-        for doc in documents:
+        for idx, doc in enumerate(documents):
             max_similarity = doc_max_similarities[str(doc['doc_id'])]  # Use string doc_id for lookup
             document_scores.append(DocumentScore(
                 doc_id=str(doc['doc_id']),  # Convert to string for Pydantic model
                 title=doc['title'],
                 url=doc['url'],
                 similarity_score=max_similarity,
-                original_similarity=doc['similarity']
+                original_similarity= request.similarities[idx] if request.similarities else None
             ))
         
         # Sort documents by similarity score (descending)

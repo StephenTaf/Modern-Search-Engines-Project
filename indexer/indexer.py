@@ -10,50 +10,72 @@ import time
 import pandas as pd
 import pyarrow as pa
 class Indexer:
-    def __init__(self,embedder: TextEmbedder,  db_path: str = cfg.DB_PATH):
+    def __init__(self,embedder: TextEmbedder,  db_path: str = cfg.DB_PATH, read_only: bool = True):
         """
         Initialize the indexer with database path and embedding model.
         """
         self.embedder = embedder
-        self.vdb = duckdb.connect(db_path)
+        self.vdb = duckdb.connect(db_path, read_only=read_only)
     
 
-    def index_documents(self, batch_size: int = cfg.DEFAULT_BATCH_SIZE, embedding_batch_size: int = cfg.DEFAULT_EMBEDDING_BATCH_SIZE, force_reindex: bool = False):
+    def index_documents(self, batch_size: int = cfg.DEFAULT_BATCH_SIZE, embedding_batch_size: int = cfg.DEFAULT_EMBEDDING_BATCH_SIZE, force_reindex: bool = False, db_fetch_batch_size: int = None):
         """
         Main function to index documents.
         This function will be called by the indexer script.
+        
+        Args:
+            batch_size: Number of documents to process in each batch
+            embedding_batch_size: Number of embeddings to generate in each sub-batch
+            force_reindex: Whether to reindex all documents
+            db_fetch_batch_size: Number of documents to fetch from DB at once (defaults to batch_size)
         """
         _tik = time.time()
+        
+        # Use batch_size as default for db_fetch_batch_size if not specified
+        if db_fetch_batch_size is None:
+            db_fetch_batch_size = cfg.DEFAULT_DB_FETCH_BATCH_SIZE
+            
         if force_reindex:
             logging.info("Force reindexing enabled. Dropping existing chunks and embeddings.")
             self.vdb.execute("DELETE FROM chunks_optimized")
             self.vdb.execute("DELETE FROM embeddings")
             self.vdb.execute("DROP INDEX IF EXISTS ip_idx;")
-            docs_to_index = self.vdb.execute(f"""SELECT id, title, text
-                                                FROM urlsDB;""").fetchall()
-            
+            # Get total count without loading all documents
+            doc_count = self.vdb.execute("SELECT COUNT(*) FROM urlsDB").fetchone()[0]
+            docs_query = "SELECT id, title, text FROM urlsDB ORDER BY id LIMIT ? OFFSET ?"
         else:
-            docs_to_index = self.vdb.execute(f"""SELECT DISTINCT docs.id, docs.title, docs.text
-                                                FROM urlsDB docs
-                                                LEFT JOIN chunks_optimized chunks 
-                                                    ON docs.id = chunks.doc_id
-                                                WHERE chunks.doc_id IS NULL;""").fetchall()
-        if len(docs_to_index) == 0:
+            # Get total count of unindexed documents
+            doc_count = self.vdb.execute("""SELECT COUNT(DISTINCT docs.id)
+                                           FROM urlsDB docs
+                                           LEFT JOIN chunks_optimized chunks 
+                                               ON docs.id = chunks.doc_id
+                                           WHERE chunks.doc_id IS NULL""").fetchone()[0]
+            docs_query = """SELECT DISTINCT docs.id, docs.title, docs.text
+                           FROM urlsDB docs
+                           LEFT JOIN chunks_optimized chunks 
+                               ON docs.id = chunks.doc_id
+                           WHERE chunks.doc_id IS NULL
+                           ORDER BY docs.id
+                           LIMIT ? OFFSET ?"""
+        
+        if doc_count == 0:
             logging.info("All documents are already indexed. Skipping indexing.")
             return
+            
         logging.info("Starting document indexing...")
-       
-        # Get document count
-        doc_count = len(docs_to_index)
         logging.info(f"Found {doc_count} documents to index")
-        chunk_id = 0
         
-        # Process documents in batches
+        chunk_id = self._get_next_chunk_id()
+        initial_chunk_id = chunk_id
+        
+        # Process documents in batches fetched from database
         offset = 0
         with tqdm(total=doc_count, desc="Processing documents") as pbar:
             while offset < doc_count:
-                _tik = time.time()
-                docs = docs_to_index[offset:offset + batch_size]
+                _tik_batch = time.time()
+                
+                # Fetch a batch of documents from database
+                docs = self.vdb.execute(docs_query, [db_fetch_batch_size, offset]).fetchall()
                 if not docs:
                     break
                 
@@ -70,7 +92,6 @@ class Indexer:
                     for _, window_text in enumerate(window_texts):
                         batch_chunks.append((chunk_id, doc_id, window_text))
                         batch_texts.append(window_text)
-                        
                         chunk_id += 1
                 
                 # Insert chunk metadata
@@ -84,16 +105,23 @@ class Indexer:
                 if batch_texts:
                     self._process_embeddings_batch(batch_texts, chunk_id - len(batch_texts), embedding_batch_size)
                 
-                offset += batch_size
+                offset += len(docs)
                 pbar.update(len(docs))
+                
+                logging.debug(f"Processed batch of {len(docs)} documents in {time.time() - _tik_batch:.2f} seconds")
         
-        logging.info(f"Processed {chunk_id} chunks from {doc_count} documents")
+        logging.info(f"Processed {chunk_id - initial_chunk_id} new chunks from {doc_count} documents")
 
         _tik = time.time()
         self.embedder.create_index()  # Create vector index for embeddings
-        logging.info(f'vector index created in {time.time() - _tik:.2f} seconds')
+        logging.info(f'Vector index created in {time.time() - _tik:.2f} seconds')
         
         logging.info("Indexing completed!")
+    
+    def _get_next_chunk_id(self) -> int:
+        """Get the next available chunk ID"""
+        result = self.vdb.execute("SELECT COALESCE(MAX(chunk_id), -1) + 1 FROM chunks_optimized").fetchone()
+        return result[0] if result else 0
 
     
     def _process_embeddings_batch(self, texts: List[str], start_id: int, batch_size: int):
