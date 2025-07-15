@@ -6,7 +6,7 @@ from .database import DatabaseManager
 from .http_client import HttpClient, ResponseHandler
 from .url_manager import UrlManager
 from .text_processor import TextProcessor
-from .scoring import ContentScorer, UTEMACalculator, TuebingenTerms
+from .scoring import ContentScorer, UTEMA, TuebingenTerms
 from .frontier import FrontierManager, FrontierEntry
 
 __version__ = "1.0.0"
@@ -22,7 +22,7 @@ __all__ = [
     'UrlManager',
     'TextProcessor',
     'ContentScorer',
-    'UTEMACalculator',
+    'UTEMA',
     'TuebingenTerms',
     'FrontierManager',
     'FrontierEntry'

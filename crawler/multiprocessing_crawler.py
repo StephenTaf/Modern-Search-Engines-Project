@@ -661,6 +661,9 @@ class MultiprocessingCrawler:
             # Mark as crawled in frontier
             self.main_crawler.frontier.mark_crawled(result['url'], True)
             
+            # DOMAIN TRACKING: Update domain page count for successful crawl
+            self.main_crawler.frontier.update_domain_page_count(result['url'])
+            
             print(f"Worker {result['worker_id']}: Successfully processed {result['url']} (score: {score:.4f}){url_count_msg}")
             
         except Exception as e:

@@ -1,53 +1,38 @@
-"""Scoring system for the Tübingen crawler."""
+"""Scoring and content analysis for the Tübingen crawler."""
 
 import re
 import time
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 from collections import Counter
 
 from .config import CrawlerConfig
 from .text_processor import TextProcessor
 
 
-class UTEMACalculator:
-    """Unbiased Time-Exponential Moving Average calculator."""
+class UTEMA:
+    """UTEMA (Uniform Treatment of Estimated Mean Average) scoring."""
     
-    def __init__(self, beta: float = 0.2):
+    def __init__(self, beta: float = 10.0):
         self.beta = beta
-        self.data: Dict[str, Dict[str, float]] = {}
+        self.domain_stats = {}  # domain -> {'total': int, 'sum': float}
     
-    def calculate(self, field_name: str, value: float) -> float:
-        """Calculate UTEMA for a given field and value."""
-        current_time = time.time()
+    def calculate(self, domain: str, score: float) -> float:
+        """Calculate UTEMA score for a domain."""
+        if domain not in self.domain_stats:
+            self.domain_stats[domain] = {'total': 0, 'sum': 0.0}
         
-        if field_name not in self.data:
-            self.data[field_name] = {
-                'S_last': value,
-                'N_last': 1,
-                't_last': current_time
-            }
-            return value
+        stats = self.domain_stats[domain]
         
-        # Get previous values
-        S_last = self.data[field_name]['S_last']
-        N_last = self.data[field_name]['N_last']
-        t_last = self.data[field_name]['t_last']
+        # UTEMA formula: (sum + beta * global_avg) / (total + beta)
+        global_avg = 0.5  # Neutral prior
+        utema_score = (stats['sum'] + self.beta * global_avg) / (stats['total'] + self.beta)
         
-        # Calculate exponential weight
-        exp_weight = math.exp(-self.beta * (current_time - t_last))
+        # Update stats for next calculation
+        stats['total'] += 1
+        stats['sum'] += score
         
-        # Update values
-        S = exp_weight * S_last + value
-        N = exp_weight * N_last + 1
-        
-        # Store updated values
-        self.data[field_name]['S_last'] = S
-        self.data[field_name]['N_last'] = N
-        self.data[field_name]['t_last'] = current_time
-        
-        # Calculate and return average
-        return S / N
+        return utema_score
 
 
 class TuebingenTerms:
@@ -85,16 +70,21 @@ class TuebingenTerms:
 
 
 class ContentScorer:
-    """Scores content based on Tübingen relevance and quality."""
+    """Analyzes and scores content for Tübingen relevance."""
     
-    def __init__(self, config: CrawlerConfig):
+    def __init__(self, config: CrawlerConfig, frontier_manager=None):
         self.config = config
+        self.frontier_manager = frontier_manager  # For domain tracking
         self.text_processor = TextProcessor()
         self.terms = TuebingenTerms()
-        self.utema = UTEMACalculator(config.utema_beta)
+        self.utema = UTEMA(beta=config.utema_beta)
         
         # Compile regex patterns for efficiency
         self._compile_patterns()
+    
+    def set_frontier_manager(self, frontier_manager):
+        """Set the frontier manager for domain tracking (used in delayed initialization)."""
+        self.frontier_manager = frontier_manager
     
     def _compile_patterns(self):
         """Compile regex patterns for efficient matching."""
@@ -116,13 +106,15 @@ class ContentScorer:
         url_lower = url.lower()
         
         # Tübingen-relevant keywords
-        tuebingen_keywords = ['tuebingen', 'tübingen', 'uni-tuebingen', 'tue']
+        tuebingen_keywords = ['tuebingen', 'tübingen', 'uni-tuebingen', 'tue', 't%c3%bcbingen']
         for keyword in tuebingen_keywords:
             if keyword in url_lower:
                 score += 0.025
                 break
-        if 'wg-gesucht' in url_lower:
+        if 'wg-gesucht' in url_lower or 'github.com' in url_lower or 'dai-tuebingen.lmscloud.net' in url_lower:
             score -= 0.04 # downgrade as they have less diversity
+        if 'mailto' in url_lower:
+            return 0
         # English content bonus
         if "/en/" in url_lower or url_lower.endswith("/en"):
             score += 0.02
@@ -145,6 +137,16 @@ class ContentScorer:
             return 0  # Archive files
         elif url_lower.endswith(('.css', '.js', '.json')):
             return 0
+            
+        # DOMAIN PENALTY: Downgrade score if more than 100 pages crawled from this domain
+        if self.frontier_manager:
+            domain = self._get_domain(url)
+            if domain:
+                domain_page_count = self.frontier_manager.get_domain_page_count(domain)
+                if domain_page_count > 100:
+                    # Progressive penalty: more pages = lower score
+                    penalty_factor = min(0.8, (domain_page_count - 100) * 0.001)  # Up to 80% penalty
+                    score -= penalty_factor
             
         # Incorporate parent page score if available
         if parent_score is not None:

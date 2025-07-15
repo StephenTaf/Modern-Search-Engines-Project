@@ -1,6 +1,7 @@
 """Frontier management for the Tübingen crawler."""
 
 import time
+import threading
 from heapdict import heapdict
 from typing import Dict, List, Optional, Tuple, Set
 from datetime import datetime, timedelta
@@ -49,6 +50,10 @@ class FrontierManager:
         self.domain_delays: Dict[str, float] = {}
         self.last_access_time: Dict[str, float] = {}
         
+        # DOMAIN TRACKING: Track pages crawled per domain
+        self.domain_page_counts: Dict[str, int] = {}
+        self._domain_lock = threading.RLock()  # Thread-safe updates for multiprocessing
+        
         # Statistics
         self.stats = {
             'total_added': 0,
@@ -57,6 +62,84 @@ class FrontierManager:
             'domain_counts': {}
         }
     
+    def should_add_to_frontier(self, url: str, parent_url: Optional[str] = None, 
+                              linking_depth: int = 0, domain_linking_depth: int = 0) -> Tuple[bool, Optional[str]]:
+        """
+        Pre-frontier validation method. Override this to add custom URL filtering logic.
+        
+        Args:
+            url: The normalized URL to check
+            parent_url: The parent URL that linked to this URL
+            linking_depth: How many levels deep this URL is
+            domain_linking_depth: How many levels deep within the same domain
+            
+        Returns:
+            Tuple of (should_add: bool, reason: Optional[str])
+            - should_add: True if URL should be added to frontier
+            - reason: Optional reason string if URL is rejected
+        """
+        
+        # Example custom validations - you can modify these:
+        
+        # 1. Domain-specific filtering
+        domain = self._get_domain(url)
+        if domain:
+            # Skip certain domains
+            blocked_domains = {
+                'facebook.com', 'twitter.com', 'instagram.com', 'linkedin.com',
+                'youtube.com', 'tiktok.com', 'pinterest.com'
+            }
+            if any(blocked in domain for blocked in blocked_domains):
+                return False, f"blocked_domain: {domain}"
+            
+            # Limit crawling depth per domain
+            domain_page_count = self.get_domain_page_count(domain)
+            if domain_page_count > 1000:  # Customize this limit
+                return False, f"domain_limit_exceeded: {domain} ({domain_page_count} pages)"
+        
+        # 2. URL pattern filtering
+        url_lower = url.lower()
+        
+        # Skip non-relevant file types
+        if any(url_lower.endswith(ext) for ext in [
+            '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+            '.jpg', '.jpeg', '.png', '.gif', '.svg', '.ico',
+            '.mp3', '.mp4', '.wav', '.avi', '.mov',
+            '.zip', '.rar', '.tar', '.gz',
+            '.css', '.js', '.json', '.xml', '.rss'
+        ]):
+            return False, "non_html_content"
+        
+        # Skip URLs with certain patterns
+        skip_patterns = [
+            '/admin/', '/login/', '/logout/', '/register/',
+            '/api/', '/ajax/', '/json/', '/download/',
+            'mailto:', 'tel:', 'ftp:', 'javascript:',
+            '/wp-content/', '/wp-admin/',
+            '?action=', '&action=', '/search?', '?search=',
+            '/cart/', '/checkout/', '/payment/'
+        ]
+        if any(pattern in url_lower for pattern in skip_patterns):
+            return False, f"pattern_match: {next(p for p in skip_patterns if p in url_lower)}"
+        
+        # 3. Depth-based filtering
+        if linking_depth > 8:  # Customize this limit
+            return False, f"max_depth_exceeded: {linking_depth}"
+        
+        # 4. URL length filtering
+        if len(url) > 2000:  # Customize this limit
+            return False, f"url_too_long: {len(url)} chars"
+        
+        # 5. Query parameter filtering (optional)
+        if '?' in url:
+            # Count query parameters
+            query_params = url.split('?', 1)[1].count('&') + 1
+            if query_params > 10:  # Customize this limit
+                return False, f"too_many_params: {query_params}"
+        
+        # If all checks pass, allow adding to frontier
+        return True, None
+
     def add_url(self, url: str, parent_url: Optional[str] = None, 
                 linking_depth: int = 0, domain_linking_depth: int = 0,
                 priority_override: Optional[float] = None) -> bool:
@@ -93,6 +176,16 @@ class FrontierManager:
         
         # Skip if URL normalization failed (invalid URL)
         if not normalized_url or normalized_url == url and not url.startswith(('http://', 'https://')):
+            return False
+        
+        # NEW: Pre-frontier validation check
+        should_add, rejection_reason = self.should_add_to_frontier(
+            normalized_url, parent_url, linking_depth, domain_linking_depth
+        )
+        if not should_add:
+            self.stats['total_rejected'] += 1
+            if rejection_reason:
+                print(f"Rejected URL: {normalized_url} - {rejection_reason}")
             return False
         
         # Skip if already processed (check normalized URL)
@@ -316,7 +409,7 @@ class FrontierManager:
     
     def load_from_database(self):
         """Load frontier from database."""
-        db_frontier = self.db_manager.get_frontier_urls(limit=10000)
+        db_frontier = self.db_manager.get_frontier_urls(limit=100_000_000)
         
         for url, schedule_time, delay, priority in db_frontier:
             entry = FrontierEntry(
@@ -340,6 +433,9 @@ class FrontierManager:
         
         # Load previously crawled URLs for faster deduplication
         self._load_crawled_urls_from_database()
+        
+        # DOMAIN TRACKING: Initialize domain page counts from database
+        self._initialize_domain_counts_from_database()
     
     def _load_crawled_urls_from_database(self):
         """Load previously crawled URLs from database into memory for faster deduplication."""
@@ -363,6 +459,55 @@ class FrontierManager:
             self.db_manager.add_to_frontier(
                 url, entry.schedule_time, entry.delay, entry.priority
             )
+    
+    def _initialize_domain_counts_from_database(self):
+        """Initialize domain page counts from existing crawled URLs in database."""
+        with self._domain_lock:
+            try:
+                with self.db_manager._get_connection() as conn:
+                    # Count crawled pages per domain
+                    result = conn.execute("""
+                        SELECT url FROM urlsDB 
+                        WHERE lastFetch IS NOT NULL
+                    """).fetchall()
+                    
+                    self.domain_page_counts.clear()
+                    
+                    for (url,) in result:
+                        domain = self._get_domain(url)
+                        if domain:
+                            self.domain_page_counts[domain] = self.domain_page_counts.get(domain, 0) + 1
+                    
+                    print(f"✅ Initialized domain counts: {len(self.domain_page_counts)} domains")
+                    if self.domain_page_counts:
+                        # Show top domains
+                        top_domains = sorted(self.domain_page_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+                        print(f"   Top domains: {dict(top_domains)}")
+                        
+            except Exception as e:
+                print(f"Warning: Could not initialize domain counts: {e}")
+                self.domain_page_counts = {}
+    
+    def get_domain_page_count(self, domain: str) -> int:
+        """Get the number of pages crawled for a domain (thread-safe)."""
+        with self._domain_lock:
+            return self.domain_page_counts.get(domain, 0)
+    
+    def update_domain_page_count(self, url: str):
+        """Update domain page count when a URL is successfully crawled (thread-safe)."""
+        domain = self._get_domain(url)
+        if domain:
+            with self._domain_lock:
+                self.domain_page_counts[domain] = self.domain_page_counts.get(domain, 0) + 1
+                # Optional: Log when reaching milestones
+                count = self.domain_page_counts[domain]
+                if count in [50, 100, 200, 500]:
+                    print(f"📊 Domain {domain}: {count} pages crawled")
+    
+    def get_domain_statistics(self) -> Dict[str, int]:
+        """Get current domain page counts (thread-safe)."""
+        with self._domain_lock:
+            return dict(self.domain_page_counts)
     
     def _get_domain(self, url: str) -> Optional[str]:
         """Extract domain from URL."""

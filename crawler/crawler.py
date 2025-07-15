@@ -35,8 +35,11 @@ class TuebingenCrawler:
         self.http_client = HttpClient(self.config)
         self.url_manager = UrlManager(self.config, self.http_client)
         self.text_processor = TextProcessor()
-        self.scorer = ContentScorer(self.config)
+        self.scorer = ContentScorer(self.config)  # Initialize without frontier_manager first
         self.frontier = FrontierManager(self.config, self.db_manager, self.scorer)
+        
+        # Connect scorer to frontier for domain tracking
+        self.scorer.set_frontier_manager(self.frontier)
         
         # Control flags
         self.is_running = False
@@ -203,6 +206,10 @@ class TuebingenCrawler:
                 )
             
             print(f"Processed {url}: score={score:.3f}, found {len(filtered_urls)} new URLs")
+            
+            # DOMAIN TRACKING: Update domain page count for successful crawl
+            self.frontier.update_domain_page_count(url)
+            
             self.stats['urls_successful'] += 1
             return True
             
