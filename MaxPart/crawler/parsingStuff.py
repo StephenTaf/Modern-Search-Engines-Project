@@ -1,26 +1,38 @@
 from bs4 import BeautifulSoup
+import requests
 import re
+import warnings
 
-def is_useful_soup(soup):
-    """Check if parsed soup contains meaningful structure or text."""
-    return soup.find() is not None and len(soup.get_text(strip=True)) > 0
 
-def parseText(text, contentType):
-    # Try XML first if content-type or content suggests it
-    is_xml_hint = (
-        "xml" in contentType or
-        text.strip().startswith("<?xml") or
-        "<rss" in text or "<feed" in text
-    )
+def parseText(text_, contentType):
+    soup = None
+    text = ""
+    title = ""
+    xmlContent = False
+    htmlContent = False
 
-    if is_xml_hint:
-        soup = BeautifulSoup(text, "xml")
-        if is_useful_soup(soup):
-            return soup.get_text()
+    if contentType:
+        xmlContent = "xml" in contentType
+        htmlContent = "html" in contentType
+        
+    if xmlContent or text_.strip().startswith("<?xml"):
+        soup = BeautifulSoup(text_, "xml")
+    elif htmlContent or "<html" in text_.lower():
+        soup = BeautifulSoup(text_, "html.parser")
 
-    # Fallback to HTML
-    soup = BeautifulSoup(text, "html.parser")
-    return soup.get_text()
+    if soup:
+        result = " ".join(
+            t.get_text(" ", strip=True)
+            for t in soup.find_all(["p", "h1", "h2", "h3", "h4", "h5", "h6", "article"])
+        )
+        if soup.title:
+            title = soup.title.string
+    return (text,title)
 
+# was just for testing:
+# url = "https://whatsdavedoing.com"
+# response = requests.get(url, timeout=10)
+# text = parseText(response.text, response.headers.get("Content-Type", ""))
+# print(text[:1000])
 
 

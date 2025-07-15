@@ -6,6 +6,9 @@
 		}
 	],
 	"settings": {
-		"python.defaultInterpreterPath": "/Users/maximilianselzer/.pyenv/versions/3.9.18/bin/python"
+		"python.defaultInterpreterPath": "/Users/maximilianselzer/.pyenv/versions/3.9.18/bin/python",
+		"terminal.integrated.defaultProfile.windows": "Command Prompt",  // or any terminal you're using
+		"python.terminal.executeInFileDir": true,
+		"python.envFile": "${workspaceFolder}/.env"
 	}
 }
