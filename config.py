@@ -1,11 +1,11 @@
 EMBEDDING_MODEL = "all-MiniLM-L6-v2" # Default embedding model
 EMBEDDING_DIMENSION = 384  # Dimension of the embeddings
 MIN_SENTENCE_LENGTH = 5  # Minimum length of sentences to consider
-DB_PATH = "index/crawlerDB.duckdb"  # Path to the DuckDB database
+DB_PATH = "merged_crawlerDB.duckdb"  # Path to the DuckDB database
 DB_TABLE = "urlsDB"  # Table name in the DuckDB database
 DEFAULT_BATCH_SIZE = 32  # Default batch size for processing documents
 DEFAULT_EMBEDDING_BATCH_SIZE = 64  # Default batch size for embeddings
-DEFAULT_DB_FETCH_BATCH_SIZE = 1000  # Default batch size for fetching documents from database
+DEFAULT_DB_FETCH_BATCH_SIZE = 128  # Default batch size for fetching documents from database
 MAX_CANDIDATES = 1000  # Maximum candidates for hybrid search
 DEFAULT_WINDOW_SIZE = 256  # Default window size for sliding windows
 DEFAULT_STEP_SIZE = 64  # Default step size for sliding windows

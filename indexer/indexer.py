@@ -1,4 +1,3 @@
-
 from indexer.embedder import TextEmbedder
 import config as cfg
 import logging
@@ -8,7 +7,6 @@ from typing import List
 import numpy as np
 import time
 import pandas as pd
-import pyarrow as pa
 class Indexer:
     def __init__(self,embedder: TextEmbedder,  db_path: str = cfg.DB_PATH, read_only: bool = True):
         """
@@ -16,7 +14,12 @@ class Indexer:
         """
         self.embedder = embedder
         self.vdb = duckdb.connect(db_path, read_only=read_only)
-    
+        
+        # Optimize database for bulk operations
+        if not read_only:
+            self.vdb.execute("PRAGMA threads=4")  # Use multiple threads
+            self.vdb.execute("PRAGMA temp_directory='/tmp'")  # Use faster temp directory
+            logging.info("Database optimized for bulk operations")
 
     def index_documents(self, batch_size: int = cfg.DEFAULT_BATCH_SIZE, embedding_batch_size: int = cfg.DEFAULT_EMBEDDING_BATCH_SIZE, force_reindex: bool = False, db_fetch_batch_size: int = None):
         """
@@ -40,6 +43,8 @@ class Indexer:
             self.vdb.execute("DELETE FROM chunks_optimized")
             self.vdb.execute("DELETE FROM embeddings")
             self.vdb.execute("DROP INDEX IF EXISTS ip_idx;")
+            self.vdb.execute("DROP INDEX IF EXISTS idx_chunks_opt_doc_id;")
+            self.vdb.execute("VACUUM")  # Compact the database
             # Get total count without loading all documents
             doc_count = self.vdb.execute("SELECT COUNT(*) FROM urlsDB").fetchone()[0]
             docs_query = "SELECT id, title, text FROM urlsDB ORDER BY id LIMIT ? OFFSET ?"
@@ -70,51 +75,72 @@ class Indexer:
         
         # Process documents in batches fetched from database
         offset = 0
-        with tqdm(total=doc_count, desc="Processing documents") as pbar:
-            while offset < doc_count:
-                _tik_batch = time.time()
-                
-                # Fetch a batch of documents from database
-                docs = self.vdb.execute(docs_query, [db_fetch_batch_size, offset]).fetchall()
-                if not docs:
-                    break
-                
-                batch_chunks = []
-                batch_texts = []
-                
-                for doc_id, title, text in docs:
-                    full_text = f"{title or ''} {text or ''}".strip()
-                    if not full_text:
-                        continue
+        
+        # Use large transaction to prevent B-tree fragmentation 
+        self.vdb.execute("BEGIN TRANSACTION")
+        try:
+            with tqdm(total=doc_count, desc="Processing documents") as pbar:
+                while offset < doc_count:
+                    _tik_batch = time.time()
                     
-                    windows = self.embedder.create_sliding_windows(full_text, window_size=cfg.DEFAULT_WINDOW_SIZE, step_size=cfg.DEFAULT_STEP_SIZE)
-                    window_texts = self.embedder.prepare_window_texts(windows)
-                    for _, window_text in enumerate(window_texts):
-                        batch_chunks.append((chunk_id, doc_id, window_text))
-                        batch_texts.append(window_text)
-                        chunk_id += 1
-                
-                # Insert chunk metadata
-                if batch_chunks:
-                    self.vdb.executemany(
-                        "INSERT INTO chunks_optimized (chunk_id, doc_id, chunk_text) VALUES (?, ?, ?)",
-                        batch_chunks
-                    )
+                    # Fetch a batch of documents from database
+                    docs = self.vdb.execute(docs_query, [db_fetch_batch_size, offset]).fetchall()
+                    if not docs:
+                        break
+                    
+                    batch_chunks = []
+                    batch_texts = []
+                    
+                    for doc_id, title, text in docs:
+                        full_text = f"{title or ''} {text or ''}".strip()
+                        if not full_text:
+                            continue
+                        
+                        windows = self.embedder.create_sliding_windows(full_text, window_size=cfg.DEFAULT_WINDOW_SIZE, step_size=cfg.DEFAULT_STEP_SIZE)
+                        window_texts = self.embedder.prepare_window_texts(windows)
+                        for _, window_text in enumerate(window_texts):
+                            batch_chunks.append((chunk_id, doc_id, window_text))
+                            batch_texts.append(window_text)
+                            chunk_id += 1
+                    
+                    # Insert chunk metadata
+                    if batch_chunks:
+                        self.vdb.executemany(
+                            "INSERT INTO chunks_optimized (chunk_id, doc_id, chunk_text) VALUES (?, ?, ?)",
+                            batch_chunks
+                        )
 
-                # Generate and store embeddings in smaller batches
-                if batch_texts:
-                    self._process_embeddings_batch(batch_texts, chunk_id - len(batch_texts), embedding_batch_size)
-                
-                offset += len(docs)
-                pbar.update(len(docs))
-                
-                logging.debug(f"Processed batch of {len(docs)} documents in {time.time() - _tik_batch:.2f} seconds")
+                    # Generate and store embeddings in smaller batches
+                    if batch_texts:
+                        self._process_embeddings_batch(batch_texts, chunk_id - len(batch_texts), embedding_batch_size)
+                    
+                    offset += len(docs)
+                    pbar.update(len(docs))
+                    
+                    # Commit every 20 batches documents 
+                    if offset % 20*db_fetch_batch_size == 0:
+                        self.vdb.execute("COMMIT")
+                        self.vdb.execute("BEGIN TRANSACTION")
+                        logging.info(f"Committed transaction at {offset} documents")
+                    
+                    logging.debug(f"Processed batch of {len(docs)} documents in {time.time() - _tik_batch:.2f} seconds")
+            
+            # Final commit
+            self.vdb.execute("COMMIT")
+         
+        except Exception as e:
+            self.vdb.execute("ROLLBACK")
+            logging.error(f"Failed during indexing: {e}")
+            raise
         
         logging.info(f"Processed {chunk_id - initial_chunk_id} new chunks from {doc_count} documents")
 
         _tik = time.time()
         self.embedder.create_index()  # Create vector index for embeddings
         logging.info(f'Vector index created in {time.time() - _tik:.2f} seconds')
+        
+        # Checkpoint the WAL file to prevent large database sizes
+        self.checkpoint_database()
         
         logging.info("Indexing completed!")
     
@@ -125,8 +151,13 @@ class Indexer:
 
     
     def _process_embeddings_batch(self, texts: List[str], start_id: int, batch_size: int):
-        embedding_data = []
-
+        """
+        Process embeddings in batches with optimized insertion strategy.
+        Fixes the 3GB/10k docs performance degradation issue.
+        """
+        # Collect ALL embeddings first before any database insertions
+        all_embedding_data = []
+        
         for i in range(0, len(texts), batch_size):
             _tik = time.time()
             batch = texts[i:i + batch_size]
@@ -134,22 +165,48 @@ class Indexer:
 
             for j, embedding in enumerate(embeddings):
                 chunk_id = start_id + i + j
-                embedding_data.append((chunk_id, embedding.astype(np.float32)))
+                # Store as list for DuckDB FLOAT[384] compatibility
+                all_embedding_data.append((chunk_id, embedding.tolist()))
             
-            logging.debug(f"Processed {len(batch)} embeddings in {time.time() - _tik:.2f} seconds")
+            logging.debug(f"Generated {len(batch)} embeddings in {time.time() - _tik:.2f} seconds")
 
-        # Convert to Arrow-backed DataFrame
-        if embedding_data:
+        # Single bulk insertion (uses existing transaction from main indexing loop)
+        if all_embedding_data:
             _tik = time.time()
-
-            chunk_ids, embedding_arrays = zip(*embedding_data)
-            df = pd.DataFrame({
-                "chunk_id": chunk_ids,
-                "embedding": pa.array(embedding_arrays, type=pa.list_(pa.float32()))
-            })
-
+            
+            # Create DataFrame and insert in one operation (within existing transaction)
+            df = pd.DataFrame(all_embedding_data, columns=["chunk_id", "embedding"])
             self.vdb.execute("INSERT INTO embeddings SELECT * FROM df")
-            logging.debug(f"Stored {len(embedding_data)} embeddings in {time.time() - _tik:.2f} seconds")
-        
+            
+            logging.debug(f"Bulk inserted {len(all_embedding_data)} embeddings in {time.time() - _tik:.2f} seconds")
     
-                
+    def checkpoint_database(self):
+        """
+        Checkpoint the WAL file to reduce database size.
+        This should be called after indexing to prevent large file sizes.
+        """
+        logging.info("Checkpointing WAL file to reduce database size...")
+        _tik = time.time()
+        
+        # Force WAL checkpoint to move data from WAL to main database file
+        self.vdb.execute("PRAGMA wal_checkpoint=FULL")
+        
+        # Also optimize the database
+        self.vdb.execute("PRAGMA optimize")
+        
+        logging.info(f"Database checkpointing completed in {time.time() - _tik:.2f} seconds")
+    
+    def vacuum_database(self):
+        """
+        Vacuum the database to reclaim unused space.
+        Call this if you've had storage issues and want to compact the database.
+        """
+        logging.info("Vacuuming database to reclaim space...")
+        _tik = time.time()
+        
+        self.vdb.execute("VACUUM")
+        
+        logging.info(f"Database vacuum completed in {time.time() - _tik:.2f} seconds")
+
+
+

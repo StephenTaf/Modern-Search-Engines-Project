@@ -35,7 +35,7 @@ class TextEmbedder:
                 chunk_id BIGINT PRIMARY KEY,
                 doc_id      BIGINT,
                 chunk_text TEXT,
-                FOREIGN KEY (doc_id) REFERENCES urlsDB(id)
+                -- FOREIGN KEY (doc_id) REFERENCES urlsDB(id)
                 );
             """)
             
