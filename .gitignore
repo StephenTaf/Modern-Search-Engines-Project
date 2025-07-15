@@ -1,0 +1,15 @@
+.venv
+.venv/
+.vscode
+bin
+__pycache__
+*.pyc
+*.pyo
+index/
+.vscode/
+__pycache__/
+*.db
+*.duckdb
+*.par
+*.wal
+*.csv

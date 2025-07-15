@@ -1,56 +1,52 @@
-
-
-
-
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%
 import random
 import requests
 from requests.adapters import HTTPAdapter
 import bisect #module for binary search
 import time
-import matplotlib.pyplot as plt
-import numpy as np
-import math
 import copy
 import re
 from datetime import datetime, timezone
 from dateutil.parser import parse
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 from UTEMA import UTEMA
 from heapdict import heapdict
 import threading 
 import duckdb
-from pympler import asizeof
 import html
 from seed import Seed as seed
-from exportCsv import export_to_csv as expCsv 
 import json
-from parsingStuff import parseText as getText
-from csvToListOfStings import csvToStringList
 from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
-from multiprocessing import Process
+from multiprocessing import Process, Pool, cpu_count
 import queue
-import sys
-import os
+# import sys
+# import os
 import httpx
 import asyncio
 import warnings
-
+from html_parser import parse_html_content
+from scoring import ContentScorer
+from url_processor import process_url_content_parallel
 
 warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning)
-print(f"TOP-LEVEL EXECUTION: __name__={__name__}, thread={threading.current_thread().name}")
+# print(f"TOP-LEVEL EXECUTION: __name__={__name__}, thread={threading.current_thread().name}")
+
+scorer = ContentScorer()
 
 # in order to be able to raise customed- errors
 class Error(Exception):
     pass
+
+
+
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 ###############################################
 # only for testing
 headers = ({ 
-    "User-Agent": "MaxCrawler",
+    "User-Agent": "citycrawl/0.1 (contact:student-id-5788@tuebingen.de",
     #DSEUniProjectCrawler/1.0 (contact: poncho.prime-3y@icloud.com)", 
     #We don't have a webpage for our crawler
-    "From": "poncho.prime-3y@icloud.com",
+    "From": "student-id-5788@tuebingen.de",
     # the different formats our crawler accepts and the preferences
     "Accept": "text/html,application/xhtml+xml q= 0.9,application/xml;q=0.8,*/*;q=0.7",
     # the languages our crawler accepts
@@ -404,7 +400,7 @@ def getHttp(url, headers = headers, allow_redirects=False,timeout=5):
 
 
 def getLastStoredId(table):
-      result = crawlerDB.execute(f"SELECT MAX(id) FROM {table}").fetchone()
+      result = get_crawler_db().execute(f"SELECT MAX(id) FROM {table}").fetchone()
       last_id = result[0] if result[0] is not None else 0
       
       return last_id
@@ -417,10 +413,11 @@ def getLastStoredId(table):
 # delete is True, if the table content should be deleted before 
 # storing the new content, and false, if it shouldn't
 def storeInTable(structure, tableName, field, pack =[], disallowedColumns =[], delete = False):
+    db = get_crawler_db()
     id = getLastStoredId(tableName)+1
     if delete:
         
-        crawlerDB.execute(f"DELETE FROM {tableName} ")
+        db.execute(f"DELETE FROM {tableName} ")
     data = []
     if not structure:
         return
@@ -439,35 +436,20 @@ def storeInTable(structure, tableName, field, pack =[], disallowedColumns =[], d
         
     else:
         dictHelper = {}
-        # for url in structure:
-        #     dictHelper[url]= [id]
-        #     dictHelper[url].append(url)
-        #     for name in structure[url]:
-        #         dictHelper[url].append(structure[url][name])
-        # #     id +=1
-        # for domain, entry in responseHttpErrorTracker.items():
-        #     for item in entry.get('data', []):
-        #         try:
-        #             json.dumps(item)
-        #         except TypeError as e:
-        #             print(f"⚠️ Serialization error in domain={domain}: {item} ({type(item)})")
-        #             raise
+        # ...existing logic...
                 
         dictHelper = {
                     field: [id+i, field] + [json.dumps(structure[field][a]) if (a in pack) else structure[field][a]  for a in  content.keys()]
                     for i, (field, content) in enumerate(structure.items())
     }
-                #print("length of one of the entries:", len( dictHelper[url]))
-                # if len( dictHelper[url])== 6:
-                #     print(list(structure[url]))
-                    
                     
         data = [tuple(dictHelper[url]) for url in dictHelper] 
 
 
-    crawlerDB.executemany(
+    db.executemany(
         f"INSERT INTO {tableName} ({columnNames}) VALUES {questionMarks}", data)
-    crawlerDB.commit()
+    db.commit()
+    print(f"Stored {len(data)} entries in table {tableName} with columns {columnNames}")
 #     except:
 #          raise Error(f'''storeInTable failed and the input was: {questionMarks},{columnNames}, now the data: {"------------------------------------------------- ".join([str(a) for a in data[0]])}_''')
 
@@ -479,8 +461,9 @@ def storeInTable(structure, tableName, field, pack =[], disallowedColumns =[], d
 # further note that unpacks is a list of column- names (strings) whose entries where json.dumps() - coded
 # they need therefore to be json.loads()- treated, note ttat again, each entry of unpacks must also be named in columns
 def readTable(structure, table, columns, field, unpacks = []):
-    rows = crawlerDB.execute(f"""SELECT {columns} FROM {table}""").fetchall()
-    columns = [desc[0] for desc in crawlerDB.description]
+    db = get_crawler_db()
+    rows = db.execute(f"""SELECT {columns} FROM {table}""").fetchall()
+    columns = [desc[0] for desc in db.description]
     dictList = [dict(zip(columns, row)) for row in rows]
     for item in dictList:
         for name in item:
@@ -494,9 +477,9 @@ def readTable(structure, table, columns, field, unpacks = []):
             else: 
                 if name!= field:
                     structure[item[field]] = item[name]    
-    crawlerDB.commit()
-    crawlerDB.execute("VACUUM")
-    crawlerDB.commit()
+    db.commit()
+    db.execute("VACUUM")
+    db.commit()
         
         
         
@@ -504,77 +487,91 @@ def readTable(structure, table, columns, field, unpacks = []):
 #......................................
 #all about urlsDB
 #......................................
-crawlerDB = duckdb.connect("crawlerDB.duckdb")
+# Initialize crawlerDB as None - will be connected lazily to avoid multiprocessing conflicts
+crawlerDB = None
 
-#Create the tables, if they don't already exist
-crawlerDB.execute("""
-    CREATE TABLE IF NOT EXISTS urlsDB (
-        id BIGINT PRIMARY KEY,
-        url TEXT,
-        title TEXT,
-        text TEXT,
-        lastFetch DOUBLE,
-        outgoing TEXT[],
-        incoming TEXT,
-        domainLinkingDepth TINYINT,
-        linkingDepth TINYINT,
-        tueEngScore DOUBLE)
-    """)
+def get_crawler_db():
+    """Get database connection, creating it lazily to avoid multiprocessing conflicts."""
+    global crawlerDB
+    if crawlerDB is None:
+        crawlerDB = duckdb.connect("crawlerDB.duckdb")
+        _init_database_tables()
+    return crawlerDB
 
-
-crawlerDB.execute("""
-    CREATE TABLE IF NOT EXISTS frontier (
-        id BIGINT PRIMARY KEY,
-        schedule DOUBLE,
-        delay DOUBLE,
-        url TEXT,
-        incomingLinks TEXT,
-        domainLinkingDepth TINYINT,
-        linkingDepth TINYINT)
-    """)
-
-
-crawlerDB.execute("""
-    CREATE TABLE IF NOT EXISTS strangeUrls (
-        id BIGINT PRIMARY KEY,
-        url TEXT,
-        received TEXT)
-    """)
-
-crawlerDB.execute("""
-    CREATE TABLE IF NOT EXISTS disallowedUrls (
-        id BIGINT PRIMARY KEY,
-        url TEXT,
-        data TEXT,
-        reason TEXT,
-        received TEXT)
-    """)
+def _init_database_tables():
+    """Initialize database tables if they don't exist."""
+    crawlerDB = get_crawler_db()
+        
+    #Create the tables, if they don't already exist
+    #Create the tables, if they don't already exist
+    crawlerDB.execute("""
+        CREATE TABLE IF NOT EXISTS urlsDB (
+            id BIGINT PRIMARY KEY,
+            url TEXT,
+            title TEXT,
+            text TEXT,
+            lastFetch DOUBLE,
+            outgoing TEXT[],
+            incoming TEXT,
+            domainLinkingDepth TINYINT,
+            linkingDepth TINYINT,
+            tueEngScore DOUBLE)
+        """)
 
 
-crawlerDB.execute("""
-    CREATE TABLE IF NOT EXISTS disallowedDomains (
-        id BIGINT PRIMARY KEY,
-        domain TEXT,
-        received TEXT,
-        data TEXT)
-    """)
+    crawlerDB.execute("""
+        CREATE TABLE IF NOT EXISTS frontier (
+            id BIGINT PRIMARY KEY,
+            schedule DOUBLE,
+            delay DOUBLE,
+            url TEXT,
+            incomingLinks TEXT,
+            domainLinkingDepth TINYINT,
+            linkingDepth TINYINT)
+        """)
 
-# this table is for storage only and not to be intended to be read out for anything else
-# than loading the errorss into responseHttpErrorTracker
-crawlerDB.execute("""
-    CREATE TABLE IF NOT EXISTS errorStorage (
-        id BIGINT PRIMARY KEY,
-        domain TEXT,
-        data TEXT,
-        urlData TEXT)
-    """)
 
-crawlerDB.execute("""
-    CREATE TABLE IF NOT EXISTS domainDelays (
-        id BIGINT PRIMARY KEY,
-        domain TEXT,
-        delay DOUBLE)
-    """)  
+    crawlerDB.execute("""
+        CREATE TABLE IF NOT EXISTS strangeUrls (
+            id BIGINT PRIMARY KEY,
+            url TEXT,
+            received TEXT)
+        """)
+
+    crawlerDB.execute("""
+        CREATE TABLE IF NOT EXISTS disallowedUrls (
+            id BIGINT PRIMARY KEY,
+            url TEXT,
+            data TEXT,
+            reason TEXT,
+            received TEXT)
+        """)
+
+
+    crawlerDB.execute("""
+        CREATE TABLE IF NOT EXISTS disallowedDomains (
+            id BIGINT PRIMARY KEY,
+            domain TEXT,
+            received TEXT,
+            data TEXT)
+        """)
+
+    # this table is for storage only and not to be intended to be read out for anything else
+    # than loading the errorss into responseHttpErrorTracker
+    crawlerDB.execute("""
+        CREATE TABLE IF NOT EXISTS errorStorage (
+            id BIGINT PRIMARY KEY,
+            domain TEXT,
+            data TEXT,
+            urlData TEXT)
+        """)
+
+    crawlerDB.execute("""
+        CREATE TABLE IF NOT EXISTS domainDelays (
+            id BIGINT PRIMARY KEY,
+            domain TEXT,
+            delay DOUBLE)
+        """)  
 
         
 def storeFrontier(): 
@@ -612,7 +609,7 @@ def storeDisallowed():
 
 # stores the disallowedDomainsCache, and the disallowedURLCache, 
 # also makes sure, that no urls form the disallowedURLCache get
-# get stored, whose domain is in the disallowedDomainsCache
+# stored, whose domain is in the disallowedDomainsCache
 # def storeDisallowed():
 #     id = getLastStoredId("disallowedDomains")
 #     for domain in disallowedDomainsCache:
@@ -655,6 +652,7 @@ def storeDisallowed():
   
   
 def storeStrangeUrls():
+    crawlerDB = get_crawler_db()
     id = getLastStoredId("strangeUrls")+1
     for index in range(len(strangeUrls)):
         crawlerDB.execute(
@@ -670,7 +668,8 @@ def storeStrangeUrls():
  
 
 def storeCache(forced=False):
-    if len(cachedUrls) > 1000 or forced:
+    n_count = 1000
+    if len(cachedUrls) > n_count or forced:
         
         # for url in cachedUrls:
         #     cachedUrls[url]["incoming"] = json.dumps(cachedUrls[url]["incoming"])
@@ -697,7 +696,7 @@ def storeCache(forced=False):
         #             data["linkingDepth"],
         #             data["tueEngScore"]))
         #     id = id+1
-    if len(cachedUrls) > 1000:
+    if len(cachedUrls) > n_count:
         cachedUrls.clear()
         
 def cleanUpDisallowed():
@@ -709,6 +708,7 @@ def cleanUpDisallowed():
 
 # rea
 def readAndDel(table, column, identifier, delete=False):
+    crawlerDB = get_crawler_db()
     cursor = crawlerDB.execute(f"SELECT * FROM {table} WHERE {column} = ? ",(identifier,))
     crawlerDB.commit()
     col_names = [desc[0] for desc in cursor.description]
@@ -754,9 +754,7 @@ def loadFrontier():
     #     frontier[item["url"]]= item["schedule","url"]
     #     frontierDict[item["url"]]= {
     #         "incomingLinks":json.loads(item["incomingLinks"]),
-    #         "linkingDepth":item["linkingDepth"],
-    #         "domainLinkingDepth":item["domainLinkingDepth"],
-    #         "delay":item["delay"]
+    #         "delay":item["delay"]  
     #     }
     
     
@@ -769,7 +767,6 @@ def loadFrontier():
     #         frontierDict[url]["delay"] = result["delay"]  
     #         frontierDict[url]["linkingDepth"]
     #         frontierDict[url]["domainLinkingDepth"]
-    #         frontier[url]= result["schedule"]
             
     #     else:
     #         break
@@ -811,6 +808,7 @@ def findUrl(url):
     if url in cachedUrls:
         return True
     else:
+        crawlerDB = get_crawler_db()
         return  crawlerDB.execute("SELECT EXISTS (FROM urlsDB WHERE id = ?)",
         [url]).fetchone()[0] 
         crawlerDB.commit()
@@ -1108,18 +1106,22 @@ def handle3xxLoop(url, location, code):
     # if this is no domain, leave values[0] as True, the error will then be caught by readFrontier later on
     # after the urls has been being written back in the frontier, the http request will report none (if the domain was not valid,
     # the url also mustn't be)
-    if newDomain and newUrl != url:
-        loopList = responseHttpErrorTracker[newDomain]["urlData"][url]["loopList"]
-        
-        # if location is true, this must already have been crated in statusCodesHandler
-        loopList.append((newUrl, time_))
-        responseHttpErrorTracker[newDomain]["urlData"][newUrl]["loopList"] = loopList
-        
-        if len(loopList) == 5:
-            moveAndDel(newUrl, "loop")
-            value = True
-        else:
-                frontierWrite(newUrl, None, url, 0)              
+    try:
+        if newDomain and newUrl != url:
+            loopList = responseHttpErrorTracker[newDomain]["urlData"][url]["loopList"]
+            
+            # if location is true, this must already have crated in statusCodesHandler
+            loopList.append((newUrl, time_))
+            responseHttpErrorTracker[newDomain]["urlData"][newUrl]["loopList"] = loopList
+            
+            if len(loopList) == 5:
+                moveAndDel(newUrl, "loop")
+                value = True
+            else:
+                    frontierWrite(newUrl, None, url, 0)
+    except KeyError as e:
+        pass
+        # print(f"KeyError in handle3xxLoop: {e}. This means that the url {url} is not in the responseHttpErrorTracker, but it should be!")              
     # use this case for the case that for some reason there is no Location in the http - response of url, even though its status_code is 3.xx
             
     return value
@@ -1155,9 +1157,6 @@ def handle3xxLoop(url, location, code):
 def handleCodes(url, code, location, info):
     domain = getDomain(url)
     value = False
-    
-    if not domain:
-        return value
     
     if code:
         counter = responseHttpErrorTracker[domain]["urlData"][url]["counters"] [str(code)] 
@@ -1253,8 +1252,8 @@ def handleCodes(url, code, location, info):
         
         
         test = UTEMA(domain, sample, responseHttpErrorTracker)
-        print(f"N_last ={responseHttpErrorTracker[domain]["N_last"]}" )
-        print(f"UTEMA ={test}" )
+        # print(f"N_last ={responseHttpErrorTracker[domain]["N_last"]}" )
+        # print(f"UTEMA ={test}" )
         # max UTEMA - average (weighted average) of bad requests we
         # accept = 0.3
         if (test > 0.4 and responseHttpErrorTracker[domain]["N_last"] >= 8):
@@ -1426,7 +1425,7 @@ def statusCodesHandler(url, location, code, info):
     
 # this function updates the information of urls in the cached urls or in storage
 def updateInfo(url, parentUrl, info, score):
-    from metric import metric
+    
     # If there was indeed an entry for this url in cache or storage, 
     # this value will be turned to True, this value is the return- value 
     updated = False
@@ -1465,7 +1464,7 @@ def updateInfo(url, parentUrl, info, score):
         # Here we maybe want to update the tueEngScore if
         # some of the latter instructins changed the info    
         if info != info_1:
-            info["tueEngScore"] = metric(info, url)
+            info["tueEngScore"] = scorer.calculate_final_score(url=url, text=info["text"], incoming_links=info["incoming"], linking_depth=info["linkingDepth"],)
         cachedUrls[url] = info
     return updated
         
@@ -1541,9 +1540,8 @@ def frontierWrite(url, robotText, predURL, score):
             else: 
                 frontierDict[url]["incomingLinks"].append([predURL, score])
 
-    
-        if ["domainLinkingDepth", "linkingDepth", "delay", "incomingLinks"] != list(frontierDict[url].keys()):
-            raise Error("Some key is missing here!")
+            if url not in frontierDict or ["domainLinkingDepth", "linkingDepth", "delay", "incomingLinks"] != list(frontierDict[url].keys()):
+                print(f"Some key is missing here! {url}")
                         
 
     
@@ -1592,6 +1590,7 @@ async def fetchResponses(lstOfUrls):
     async with httpx.AsyncClient(timeout=timeout, headers= headers, follow_redirects= False ) as client:
         tasks = [fetchSingleResponse(client, url) for url in lstOfUrls]
         responses = await asyncio.gather(*tasks)
+        print(f"Fetched {len(responses)} responses")
         return responses
 
 def lstAllDifferentDomains(maxLength):
@@ -1624,7 +1623,7 @@ def lstAllDifferentDomains(maxLength):
     return resultList 
         
 def frontierRead(urlDict, info):
-    from metric import metric
+    
     url = urlDict["url"]
     response = urlDict["responded"]
     
@@ -1665,7 +1664,7 @@ def frontierRead(urlDict, info):
                                     "domainLinkingDepth":5, "linkingDepth": 50, "tueEngScore": 0.0}
         
     info = cachedUrls[url]
-    textAndTitle = getText(rawText, contentType)
+    textAndTitle = parse_html_content(urlDict)
     info["title"] =textAndTitle[1]
     text = textAndTitle[0]
     info["text"] = text
@@ -1677,11 +1676,13 @@ def frontierRead(urlDict, info):
     except:
         raise Error(f"fails with url {url}")
     info["outgoing"] = extractUrls(rawText, url)
+    info["outgoing"] = extractUrls(rawText, url)
     info["linkingDepth"] = frontierDict[url]["linkingDepth"]
     info["domainLinkingDepth"] = frontierDict[url]["domainLinkingDepth"]
     
-    info["tueEngScore"] = metric(info, url)
-    if info["tueEngScore"] >-1:
+    info["tueEngScore"] = scorer.calculate_final_score(url=url, text=text, incoming_links=info["incoming"], linking_depth=info["linkingDepth"],)
+    #metric(info, url)
+    if info["tueEngScore"] >0:
         # why  info["domainLinkingDepth"]<5 ? Well the the amount of links
         # to get from the main page of uni tübingen to the webpage of an computer 
         # science professor is roughly 5
@@ -1693,16 +1694,114 @@ def frontierRead(urlDict, info):
     moveAndDel(url, "success")
     return (True, url)
         
+def frontierReadSequential(result, urlDict, responses):
+    """
+    Sequential processing function that handles operations requiring global state access.
+    This function processes a single URL result and performs all the operations that
+    need to modify global dictionaries and caches.
+    
+    Args:
+        result: Processed result from parallel processing
+        urlDict: Original URL dictionary from responses
+        responses: List of all response dictionaries for lookups
+        
+    Returns:
+        tuple: (success, url) indicating whether processing was successful
+    """
+    if not result:
+        return (False, "")
+        
+    url = result["url"]
+    
+    # Handle failed processing
+    if not result["success"]:
+        # Still need to call statusCodesHandler for failed cases
+        if url in frontierDict:
+            statusCodesHandler(url, None, None, frontierDict[url])
+        return (False, url)
+    
+    # For successful processing, we still need to handle the parts that modify global state
+    if not urlDict:
+        return (False, url)
+        
+    # Handle response validation and status codes (needs global state access)
+    if urlDict["responded"]:
+        code = urlDict["code"]
+        location = urlDict["location"]
+        robot = urlDict["robot"]
+        
+        # These functions may modify global dictionaries, so keep sequential
+        robotsTxtCheck(url, robot)
+        if urlDict["retry"]:
+            retry(urlDict["retry"])
+        
+        valid = statusCodesHandler(url, location, code, frontierDict[url])
+        if not valid:
+            return (False, url)
+    else:
+        statusCodesHandler(url, None, None, frontierDict[url])
+        return (False, url)
+    
+    # Update global cached URLs with processed results
+    # write to cachedUrls only if score is greater than 0
+    if result["score"] > 0:
+        cachedUrls[url] = {
+            "title": result["title"],
+            "text": result["text"],
+            "lastFetch": time.time(),
+            "outgoing": result["outgoing"],
+            "incoming": result["incoming"],
+            "domainLinkingDepth": result["domainLinkingDepth"],
+            "linkingDepth": result["linkingDepth"],
+            "tueEngScore": result["score"]
+        }
+    
+    # Handle frontier updates for successful URLs
+    if result["score"] > 0:
+        if result["domainLinkingDepth"] < 5 and result["linkingDepth"] < 5:
+            robot = urlDict.get("robot", "")
+            for successorUrl in result["outgoing"]:
+                frontierWrite(successorUrl, robot, url, result["score"])
+    
+    # Clean up and mark as successful
+    moveAndDel(url, "success")
+    return (True, url)
+
 # maxNumberOfUrls is very important, since it controls the maximal number of parallel 
 # http requests       
 def manageFrontierRead():
     lastStoredUrl = ""
-    maxNumberOfUrls = 20
+    maxNumberOfUrls = 32
     urlsList = lstAllDifferentDomains(maxNumberOfUrls) 
     responses = asyncio.run(fetchResponses(urlsList))
+    
+    # Prepare data for multiprocessing - collect all the frontier info we need
+    process_args = []
     for urlDict in responses:
         url = urlDict["url"]
-        success,_ = frontierRead(urlDict, frontierDict[url])
+        if url in frontierDict:
+            process_args.append((urlDict, frontierDict[url]))
+    
+    # Use multiprocessing for CPU-intensive content processing
+    num_processes = min(cpu_count()-1, len(process_args)) if process_args else 1
+    processed_results = []
+    
+    if process_args:
+        # Only use multiprocessing if we have enough URLs to make it worthwhile
+        if len(process_args) > 3 and num_processes > 1:
+            with Pool(processes=num_processes) as pool:
+                processed_results = pool.map(process_url_content_parallel, process_args)
+        else:
+            # For small numbers of URLs, sequential processing is more efficient
+            processed_results = [process_url_content_parallel(args) for args in process_args]
+    
+    # Sequential processing for operations that modify global state
+    for result in processed_results:
+        # Find the corresponding urlDict for this result
+        urlDict = next((ud for ud in responses if ud["url"] == result["url"]), None) if result else None
+        
+        # Process sequentially using the extracted function
+        success, url = frontierReadSequential(result, urlDict, responses)
         if success:
             lastStoredUrl = url
         
@@ -1910,7 +2009,6 @@ def frontierInit(lst):
 def crawler(lst):#inputThread):
     # IMPORTANT: Activate this in order to load the earlier frontier from the database
     print("Input not yet available, please wait!")
-    global inputDict
     frontierInit(lst)
     loadFrontier()
     readTable(disallowedDomainsCache, 'disallowedDomains','domain, received, data', "domain", unpacks = ["received"])
@@ -1948,12 +2046,12 @@ def crawler(lst):#inputThread):
             print(f"the actual number disallowedUrls: {len(disallowedURLCache)}")
             print(f"the actual number disallowedDomains: {len(disallowedDomainsCache)}")
             print(f'There are  {crawlerDB.execute("SELECT COUNT(*) FROM urlsDB").fetchone()} stored urls so far')
-            for index in range(min(10, len(frontier)-1)):
-                if frontier != []:
-                    url = list(frontier)[-(index-1)]
-                    if getDomain(url) in responseHttpErrorTracker:
-                        print(f'''In the domain {getDomain(url)} these were the last status_codes at the times: {[a[1] for a in responseHttpErrorTracker[getDomain(url)]["data"]]}''')
-                        print("--------------------------")
+            # for index in range(min(10, len(frontier)-1)):
+            #     if frontier != []:
+            #         url = list(frontier)[-(index-1)]
+            #         if getDomain(url) in responseHttpErrorTracker:
+            #             print(f'''In the domain {getDomain(url)} these were the last status_codes at the times: {[a[1] for a in responseHttpErrorTracker[getDomain(url)]["data"]]}''')
+            #             print("--------------------------")
             print("---------------------------------------------------")
             
         
@@ -1961,7 +2059,7 @@ def crawler(lst):#inputThread):
      # IMPORTANT: Activate this in order to store cachedUrls into the database, when the program stops
     storeCache(True)
     
-    # deletes the urls for which the domains are in 
+    # deletes the urls for which the domain are in 
     # disallowedDomainsCache
     cleanUpDisallowed()  
     print(f'There are  {crawlerDB.execute("SELECT COUNT(*) FROM urlsDB").fetchone()} stored urls so far')
@@ -1988,18 +2086,18 @@ def crawler(lst):#inputThread):
 
 def runCrawler(lst):
     if __name__ == "__main__":
-        try:    
-            os.remove("crawlerDB.duckdb.wal")
-        except:
-            pass
-        try:
-            os.remove("crawlerDB.duckdb")
-        except:
-            pass
+        # try:    
+        #     os.remove("crawlerDB.duckdb.wal")
+        # except:
+        #     pass
+        # try:
+        #     os.remove("crawlerDB.duckdb")
+        # except:
+        #     pass
         crawler(lst) #)
         # If you want to save the frontier or the urlsDB as csv, activate either
-        saveAsCsv("frontier", "id, schedule, delay, url",10)
-        saveAsCsv("urlsDB", "url, lastFetch, tueEngScore",100)
+        # saveAsCsv("frontier", "id, schedule, delay, url",10)
+        # saveAsCsv("urlsDB", "url, lastFetch, tueEngScore",100)
         print("[MAIN] crawler finished")
         crawlerDB.commit()
         crawlerDB.close()
@@ -2013,9 +2111,10 @@ errorTestList = [f"https://mock.httpstatus.io/{a}" for a in range(300,320)]
 #%%
 #this was for my own test purposes
 #runCrawler(["rubbish"])
-#runCrawler(["https://www.bristol.ac.uk", "https://www.cbsnews.com", "https://www.newyorker.com","https://www.visitsingapore.com"])
-runCrawler(errorTestList)
-
+# seed
+# runCrawler(["https://www.bristol.ac.uk", "https://www.cbsnews.com", "https://www.newyorker.com","https://www.visitsingapore.com"])
+#runCrawler(errorTestList)
+runCrawler([])
 
 #runCrawler(["https://whatsdavedoing.com"])
 
