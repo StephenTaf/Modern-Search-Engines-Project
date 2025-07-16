@@ -4,7 +4,7 @@
 openai:
   api_key: "" # Set your API key
   embedding_model: "BAAI/bge-large-en-v1.5"  # OpenAI embedding model to use
-  batch_size: 100  # Number of texts to process in parallel. Now uses true batching - fewer API calls!
+  batch_size: 1000  # Number of texts to process in parallel. Now uses true batching - fewer API calls!
   base_url: "https://api.together.xyz/v1"
 
 # HuggingFace Model Configuration
@@ -19,7 +19,8 @@ huggingface:
 sliding_window:
   default_window_size: 500  # Default number of tokens per window
   default_step_size: 400    # Default step size for sliding windows
-  default_top_n: 20         # Default number of top windows to return
+  default_top_n: 100         # Default number of top windows to return
+  position_boost_decay: 0.1  # Decay factor for position-based boosting (higher = more decay)
 
 # Server Configuration
 server:
@@ -37,7 +38,7 @@ file_processing:
 
 # Database Configuration
 database:
-  data_path: "index/crawlerDB.duckdb"
+  data_path: "crawlerDB.duckdb"
   # JSON file should contain list of dicts with fields: doc_id, sentence, title, url, text, similarity
 
 # Similarity Calculation

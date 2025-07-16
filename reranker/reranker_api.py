@@ -27,7 +27,20 @@ class Database:
             doc_ids = [doc_ids]
         
         placeholders = ', '.join(['?'] * len(doc_ids))
-        query = f"SELECT CAST(id AS TEXT) AS id, title, url, text FROM urlsDB WHERE id IN ({placeholders})"
+        # Use GROUP BY url to get distinct URLs, normalizing URLs by removing query parameters
+        # This treats URLs as the same if they only differ by query parameters (e.g., ?q=vf)
+        query = f"""
+        SELECT CAST(MIN(id) AS TEXT) AS id, 
+               FIRST(title) AS title, 
+               FIRST(url) AS url, 
+               FIRST(text) AS text 
+        FROM urlsDB 
+        WHERE id IN ({placeholders}) 
+        GROUP BY CASE 
+            WHEN INSTR(url, '?') > 0 THEN SUBSTR(url, 1, INSTR(url, '?') - 1)
+            ELSE url 
+        END
+        """
         
         results = self.vdb.execute(query, doc_ids).fetchall()
         
@@ -431,11 +444,10 @@ async def rerank(request: RerankRequest):
         # Process documents and collect all windows
         all_windows = []  # will keep (doc_id, window_text, window_id)
         total_windows = 0
-        
         for idx, doc in enumerate(documents):
-            logger.debug(f"Processing document: {doc['doc_id']}")
+            logger.debug(f"Processing document: {doc['doc_id']}")    
             # Tokenize document without special tokens initially
-            doc_tokens = tokenize_text(doc['text'], add_special_tokens=False)
+            doc_tokens = tokenize_text(f"{doc['title']} {doc['text']}", add_special_tokens=False)
             # Create sliding windows
             windows = create_sliding_windows(doc_tokens, request.window_size, request.step_size)
             total_windows += len(windows)
@@ -466,29 +478,38 @@ async def rerank(request: RerankRequest):
             # Calculate similarity between query and window
             similarity = calculate_similarity(query_embedding, window['embedding'])
             
-            # Track max similarity for each document (use string doc_id for consistency)
+            # Track max similarity for each document with early window boost
             doc_id = str(window['doc_id'])
+            window_index = window['window_id']
+            
+            # Apply position-based boost: earlier windows get higher weight
+            # First window (title area) gets full boost, subsequent windows get progressively less
+            decay_factor = config['sliding_window']['position_boost_decay']
+            position_boost = 1.0 / (1.0 + window_index * decay_factor)
+            boosted_similarity = similarity * position_boost
+            
             if doc_id not in doc_max_similarities:
-                doc_max_similarities[doc_id] = similarity
+                doc_max_similarities[doc_id] = boosted_similarity
             else:
-                doc_max_similarities[doc_id] = max(doc_max_similarities[doc_id], similarity)
+                doc_max_similarities[doc_id] = max(doc_max_similarities[doc_id], boosted_similarity)
             
             # Create window score object
             window_scores.append(WindowScore(
-                text=window['text'],
-                similarity_score=similarity,
+                text=window.get('text', 'Unknown'),
+                similarity_score=boosted_similarity,
                 doc_id=str(window['doc_id']),  # Convert to string for Pydantic model
-                title=window['title'],
+                title=window.get('title', 'Unknown'),
                 window_index=window['window_id']
             ))
-        
+
         # Create document scores using max similarity per document
         for idx, doc in enumerate(documents):
+    
             max_similarity = doc_max_similarities[str(doc['doc_id'])]  # Use string doc_id for lookup
             document_scores.append(DocumentScore(
                 doc_id=str(doc['doc_id']),  # Convert to string for Pydantic model
-                title=doc['title'],
-                url=doc['url'],
+                title=doc.get('title', ''),
+                url=doc.get('url', ''),
                 similarity_score=max_similarity,
                 original_similarity= request.similarities[idx] if request.similarities else None
             ))

@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 from retriever import Retriever
 from indexer.bm25 import BM25
@@ -10,6 +10,7 @@ import duckdb
 import time
 import json
 from reranker.reranker_api import rerank, RerankRequest
+import uuid
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -69,12 +70,15 @@ def initialize_search_engine():
 async def search():
     """Search endpoint that returns results in the format expected by the UI"""
     try:
+        _tik = time.time()
         if not retriever_instance:
             return jsonify({'error': 'Search engine not initialized'}), 500
             
         data = request.get_json()
         query = data.get('query', '').strip()
-        top_k = data.get('top_k', 20)  # Get more results for better visualization
+        top_k = data.get('top_k', cfg.TOP_K_RETRIEVAL)  # Get more results for better visualization
+        
+        query = preprocess_query(query)
         
         if not query:
             return jsonify({'error': 'Query is required'}), 400
@@ -109,7 +113,7 @@ async def search():
             score = document.similarity_score or 0.0
             
             formatted_result = {
-                'query_id': 1,  # Could be based on session or query hash
+                'query_id': uuid.uuid4().hex,  # Unique ID for the query
                 'rank': i,
                 'url': url,
                 'score': score,
@@ -130,12 +134,27 @@ async def search():
             sample_topics = list(set([r['topic'] for r in formatted_results[:5]]))
             logging.info(f"Sample topics: {sample_topics}")
             logging.info(f"Sample result structure: {json.dumps(formatted_results[0], indent=2)}")
-            
+        logging.info(f"Search completed in {time.time() - _tik:.2f} seconds")
         return jsonify(formatted_results)
         
     except Exception as e:
         logging.error(f"Search error: {str(e)}")
         return jsonify({'error': 'Internal server error'}), 500
+
+
+def preprocess_query(query: str) -> str:
+    """Preprocess the query string for better search results"""
+    # Basic preprocessing: strip whitespace, convert to lowercase
+    # replace tuebingen with tübingen
+    query = query.strip().lower()
+    if "tuebingen" in query or "tubingen" in query or "tübingen" in query:
+        # Replace with the correct spelling
+        query = query.replace('tuebingen', 'tübingen').replace('tubingen', 'tübingen')
+    else:
+        # If not present, add it to the query
+        query = f"{query} tübingen"
+    query = query.replace('tuebingen', 'tübingen').replace('tubingen', 'tübingen')
+    return query.strip().lower()
 
 def extract_domain_topic(url):
     """Extract domain-based topic from URL"""
@@ -207,7 +226,7 @@ def health():
 @app.route('/', methods=['GET'])
 def index():
     """Serve the main UI page"""
-    return app.send_static_file('ui/index.html')
+    return render_template('index.html')
 
 if __name__ == '__main__':
     # Initialize search engine on startup

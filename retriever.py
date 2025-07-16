@@ -25,11 +25,11 @@ class Retriever:
         self.embedder = embedder
         self.indexer = indexer
 
-    def quick_search(self, query: str, top_k: int = 10, max_candidates: int = cfg.MAX_CANDIDATES, return_unique_docs: bool = False) -> List[Dict]:
+    def quick_search(self, query: str, top_k: int = 20, max_candidates: int = cfg.MAX_CANDIDATES, return_unique_docs: bool = False) -> List[Dict]:
         """        Perform a quick ANN search
         Returns a list of dictionaries with document metadata and scores.
         """
-        
+   
         results = self.vdb.execute(f"""
             WITH top_candidates AS (
                 SELECT chunk_id,  array_negative_inner_product(embedding, embed($q)) AS similarity
@@ -45,13 +45,20 @@ class Retriever:
             {"q": query}
         ).fetchall()
         
-        # Convert results to a list of dictionaries
+        # Convert results to a list of dictionaries with deduplication
         results_list = []
         unique_doc_ids = set()
         doc_max_scores = {}  # Track max score per document for unique docs mode
+        seen_chunks = set()  # Track chunks we've seen to deduplicate by text content
         
         for doc_id, chunk_text, similarity in results:
             unique_doc_ids.add(doc_id)
+            
+            # Skip if we've already seen this chunk text (same text = same similarity)
+            if chunk_text in seen_chunks:
+                continue
+            
+            seen_chunks.add(chunk_text)
             
             result_item = {
                 'doc_id': doc_id,

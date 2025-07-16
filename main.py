@@ -38,7 +38,7 @@ def main():
         if query.lower() in {"exit", "quit"}:
             print("Exiting search engine.")
             break
-        results = retriever_instance.quick_search(query, top_k=10, return_unique_docs=True)
+        results = retriever_instance.quick_search(query, top_k=cfg.TOP_K_RETRIEVAL, return_unique_docs=True)
         if not results:
             print("No results found.")
         else:

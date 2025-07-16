@@ -68,6 +68,7 @@ class Indexer:
             return
             
         logging.info("Starting document indexing...")
+        self.vdb.execute("DROP INDEX IF EXISTS ip_idx;")
         logging.info(f"Found {doc_count} documents to index")
         
         chunk_id = self._get_next_chunk_id()
@@ -116,9 +117,9 @@ class Indexer:
                     
                     offset += len(docs)
                     pbar.update(len(docs))
-                    
-                    # Commit every 20 batches documents 
-                    if offset % 20*db_fetch_batch_size == 0:
+
+                    # Commit every 50 batches documents
+                    if offset % (50*db_fetch_batch_size) == 0:
                         self.vdb.execute("COMMIT")
                         self.vdb.execute("BEGIN TRANSACTION")
                         logging.info(f"Committed transaction at {offset} documents")
@@ -140,7 +141,7 @@ class Indexer:
         logging.info(f'Vector index created in {time.time() - _tik:.2f} seconds')
         
         # Checkpoint the WAL file to prevent large database sizes
-        self.checkpoint_database()
+        # self.checkpoint_database()
         
         logging.info("Indexing completed!")
     

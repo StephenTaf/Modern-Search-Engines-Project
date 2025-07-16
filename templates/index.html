@@ -19,8 +19,21 @@
     </p>
   </div>
 
+  <div id="controls" style="display: none; text-align: center; margin: 20px 0;">
+    <button id="toggleView" class="toggle-btn">Switch to List View</button>
+    <p style="margin-top: 10px; color: #666; font-size: 12px;">
+      💡 <strong>Bubble View:</strong> Overview → Zoom into clusters • Pan by dragging • Mouse wheel zoom • Click bubbles to visit pages
+    </p>
+  </div>
+
   <div id="results" style="display: none;">
-    <svg id="bubbleChart" width="800" height="600"></svg>
+    <div id="bubbleView">
+      <svg id="bubbleChart"></svg>
+    </div>
+    
+    <div id="listView" style="display: none;">
+      <div id="searchResults" class="search-results"></div>
+    </div>
   </div>
 
   <script src="/static/main.js"></script>
