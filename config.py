@@ -3,7 +3,7 @@ EMBEDDING_DIMENSION = 384  # Dimension of the embeddings
 MIN_SENTENCE_LENGTH = 5  # Minimum length of sentences to consider
 DB_PATH = "crawlerDb.duckdb"  # Path to the DuckDB database
 DB_TABLE = "urlsDB"  # Table name in the DuckDB database
-DEFAULT_BATCH_SIZE = 32  # Default batch size for processing documents
+
 DEFAULT_EMBEDDING_BATCH_SIZE = 64  # Default batch size for embeddings
 DEFAULT_DB_FETCH_BATCH_SIZE = 256  # Default batch size for fetching documents from database
 MAX_CANDIDATES = 1000  # Maximum candidates for hybrid search
@@ -14,7 +14,9 @@ TOP_K_RETRIEVAL = 200  # Default number of top results to return in retrieval
 TOP_K_RERANKING = 100  # Default number of top results to return in reranking
 
 # Reranker API Configuration
-RERANKER_API_URL = "http://localhost:8000"  # Base URL for the reranker API
+RERANKER_API_URL = "http://localhost:8000/rerank"  # URL for the reranker API
 RERANKER_TIMEOUT = 200  # Timeout for reranker API requests in seconds
+
+LLM_API_URL = "http://localhost:1984/generate_summary"  # URL for the LLM API
 
 USE_BM25 = False  # Whether to use BM25 for indexing, we do not use it anymore

@@ -95,6 +95,20 @@ Modern-Search-Engines-Project/
 
 ## Getting Started
 
+### Prerequisites
+
+**Required Dataset**
+You need a crawled dataset stored in a DuckDB file named `crawlerDb.duckdb` (default). This file should contain a `urlsDB` table with at least the following fields:
+- `id` - Unique document identifier
+- `url` - Source URL of the document
+- `title` - Document title
+- `text` - Document content
+
+The database filename and path can be configured in:
+- `config.py` (DB_PATH variable)
+- `reranker/config.yaml` (database configuration)
+
+ The dataset can also be downloaded at https://huggingface.co/datasets/lalit3c/Tuebingen-Crawled/tree/main 
 
 ### Installation
 
@@ -184,10 +198,6 @@ The search engine supports efficient batch processing of multiple queries with p
 - **Parallel Execution**: All queries processed simultaneously using asyncio.gather
 - **Error Handling**: Individual query failures don't stop batch processing
 - **File Output**: Results saved in format: `query_num<tab>rank<tab>url<tab>score`
-
-```
-
-
 
 ## Configuration
 
