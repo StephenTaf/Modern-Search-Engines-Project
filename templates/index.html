@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Search Results Visualization</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+<body>
+  <div id="header" class="centered">
+    <h1 id="site-title">BubbleSearch</h1>
+    <div class="search-container">
+      <input type="text" id="queryInput" placeholder="Enter your search query..." />
+      <button id="searchBtn" class="search-btn">Search</button>
+    </div>
+    <p style="margin-top: 10px; color: #666; font-size: 14px;">
+      Enter a query to search and visualize results as interactive bubbles
+    </p>
+  </div>
+
+  <div id="controls" style="display: none; text-align: center; margin: 20px 0;">
+    <button id="toggleView" class="toggle-btn">Switch to List View</button>
+    <p style="margin-top: 10px; color: #666; font-size: 12px;">
+      💡 <strong>Bubble View:</strong> Overview → Zoom into clusters • Pan by dragging • Mouse wheel zoom • Click bubbles to visit pages
+    </p>
+  </div>
+
+  <div id="results" style="display: none;">
+    <div id="bubbleView">
+      <svg id="bubbleChart"></svg>
+    </div>
+    
+    <div id="listView" style="display: none;">
+      <div id="searchResults" class="search-results"></div>
+    </div>
+  </div>
+
+  <script src="/static/main.js"></script>
+</body>
+</html>
