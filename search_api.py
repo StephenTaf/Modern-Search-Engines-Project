@@ -130,23 +130,25 @@ async def search():
                 'secondaryTopics': []
             }
             formatted_results.append(formatted_result)
-        # TODO: ADD this back when LLM API is ready
-        # top_windows = reranked_results.get('top_windows', [])
-        # if top_windows:
-        #     llm_request = {
-        #         "most_relevant_windows": [window.get('text', '') for window in top_windows[:5]],
-        #         "query": query
-        #     }
-        #     async with httpx.AsyncClient(timeout=cfg.RERANKER_TIMEOUT) as client:
-        #         response = await client.post(
-        #             f"{cfg.LLM_API_URL}",
-        #             json=llm_request
-        #         )
-        #         llm_response = response.json()
-        
+        top_windows = reranked_results.get('top_windows', [])
+        if top_windows:
+            llm_request = {
+                "most_relevant_windows": [window.get('text', '') for window in top_windows[:cfg.LLM_MAX_WINDOWS]],
+                "query": query
+            }
+            async with httpx.AsyncClient(timeout=cfg.LLM_TIMEOUT) as client:
+                response = await client.post(
+                    f"{cfg.LLM_API_URL}",
+                    json=llm_request
+                )
+                llm_response = response.json()
+        response = {
+            "llm_response": llm_response.get('response', ''),
+            "documents": formatted_results,
+        }
         logging.info(f"Search completed for {query} in {time.time() - _tik:.2f} seconds")
-        return jsonify(formatted_results)
-        
+        return jsonify(response)
+
     except Exception as e:
         logging.error(f"Search error: {str(e)}")
         return jsonify({'error': 'Internal server error'}), 500

@@ -18,5 +18,7 @@ RERANKER_API_URL = "http://localhost:8000/rerank"  # URL for the reranker API
 RERANKER_TIMEOUT = 200  # Timeout for reranker API requests in seconds
 
 LLM_API_URL = "http://localhost:1984/generate_summary"  # URL for the LLM API
+LLM_TIMEOUT = 200  # Timeout for LLM API requests in seconds
+LLM_MAX_WINDOWS = 10  # Maximum number of windows to process in LLM API
 
 USE_BM25 = False  # Whether to use BM25 for indexing, we do not use it anymore
