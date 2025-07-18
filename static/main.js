@@ -25,17 +25,24 @@ async function searchAPI(query) {
 
         const data = await response.json();
         console.log('API response data structure:', {
-            type: Array.isArray(data) ? "array" : typeof data,
-            length: Array.isArray(data) ? data.length : "N/A",
-            sample: Array.isArray(data) && data.length > 0 ? data[0] : "No data"
+            type: typeof data,
+            hasDocuments: data.documents ? true : false,
+            hasLLMResponse: data.llm_response ? true : false,
+            documentsLength: data.documents ? data.documents.length : "N/A",
+            sample: data.documents && data.documents.length > 0 ? data.documents[0] : "No data",
+            llm_response: data.llm_response || "N/A"
         });
         
-        if (!Array.isArray(data)) {
-            console.error('API did not return an array:', data);
-            throw new Error(`API returned ${typeof data} instead of array`);
+        if (data.documents && Array.isArray(data.documents)) {
+            window.currentLLMResponse = data.llm_response || '';
+            return data.documents;
+        } else if (Array.isArray(data)) {
+            // If the API returns a simple array of documents and no LLM response
+            return data;
+        } else {
+            console.error('API did not return valid format:', data);
+            throw new Error(`API returned invalid format`);
         }
-        
-        return data;
     } catch (error) {
         console.error('Search API error details:', {
             message: error.message,
