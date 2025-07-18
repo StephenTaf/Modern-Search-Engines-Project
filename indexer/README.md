@@ -73,7 +73,6 @@ The indexer uses configuration parameters from `config.py`:
 - **MIN_SENTENCE_LENGTH**: `5` - Minimum length of sentences to consider for indexing
 - **DB_PATH**: `"crawlerDB.duckdb"` - Path to the DuckDB database
 - **DB_TABLE**: `"urlsDB"` - Table name containing the crawled documents
-- **DEFAULT_BATCH_SIZE**: `32` - Default batch size for processing documents
 - **DEFAULT_EMBEDDING_BATCH_SIZE**: `64` - Batch size for generating embeddings
 - **DEFAULT_DB_FETCH_BATCH_SIZE**: `100` - Batch size for fetching documents from database
 - **DEFAULT_WINDOW_SIZE**: `256` - Window size for text chunking

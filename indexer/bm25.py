@@ -81,7 +81,7 @@ class BM25:
         # Create indexes for faster lookups
         self.vdb.execute("CREATE INDEX IF NOT EXISTS idx_bm25_sentence_terms_term ON bm25_sentence_terms(term);")
     
-    def get_all_tokenized_docs(self, batch_size=cfg.DEFAULT_BATCH_SIZE):
+    def get_all_tokenized_docs(self, batch_size=cfg.DEFAULT_DB_FETCH_BATCH_SIZE):
         """Retrieve all tokenized sentences from the database"""
         doc_count = self.vdb.execute(f"SELECT COUNT(*) FROM {cfg.DB_TABLE}").fetchone()[0]
         logging.info(f"Found {doc_count} documents to index")
