@@ -88,6 +88,10 @@ Modern-Search-Engines-Project/
 │       ├── config.yaml       # Reranker configuration
 │       └── README.md         # Detailed reranking documentation
 │
+├── Search Assistant
+│   └── search_assistant/
+│       └── main.py           # LLM-powered summarisation
+│
 └── Data Storage
     ├── crawlerDb.duckdb      # Main document database
     ├── crawler_v*.db         # Crawling session databases
@@ -120,11 +124,20 @@ pip install -r requirements.txt
 
 ### Quick Start
 
-**Prerequisites: Start the Reranker Service**
+**Prerequisites: Start Required Services**
 ```bash
-# First, configure your OpenAI API key in reranker/config.yaml
+# Start Reranker service API
+# First, configure your OpenAI API key in reranker/config.yaml. To get a free API key, sign up here: https://api.together.ai/
 cd reranker/
 python reranker_api.py
+
+# Start the search assistant LLM service
+# configure your Cerebras API key in search_assistant/config.yaml. To get a free API key, sign up here: https://www.cerebras.ai/inference
+cd search_assistant/
+python main.py  
+
+# In a new terminal, start the main search API
+python search_api.py
 ```
 
 **Option 1: Web Interface (Recommended)**
@@ -145,6 +158,10 @@ python index_all.py
 # Start the reranker service
 cd reranker/
 python reranker_api.py
+
+# Start LLM Summarization service
+cd search_assistant/
+python main.py
 
 # Finally, start the search API (in a new terminal)
 python search_api.py
@@ -168,6 +185,32 @@ curl -X POST http://localhost:5000/api/search \
   -H "Content-Type: application/json" \
   -d '{"query": "university research tübingen", "top_k": 10}'
 ```
+
+**Response Format:**
+```json
+{
+  "llm_response": "Generated response based on the most relevant content windows",
+  "documents": [
+    {
+      "query_id": "unique-query-id",
+      "rank": 1,
+      "url": "https://example.com",
+      "score": 0.95,
+      "title": "Document Title",
+      "snippet": "Document snippet...",
+      "topic": "domain-topic",
+      "doc_id": "document-id",
+      "topics": ["domain-topic"], # not used
+      "primaryTopic": "domain-topic", # not used
+      "secondaryTopics": [] # not used
+    }
+  ]
+}
+```
+
+The API response includes:
+- **llm_response**: LLM-generated response based on the most relevant content windows from the search results
+- **documents**:  search results with document metadata
 
 **Batch Query Processing**
 
@@ -224,6 +267,11 @@ MAX_CANDIDATES = 1000                 # Maximum chunks to fetch using ANN
 # Reranking settings
 RERANKER_API_URL = "http://localhost:8000"  # Reranker service URL
 RERANKER_TIMEOUT = 100                # Timeout for reranker API requests
+
+# LLM Assistant settings
+LLM_API_URL = "http://localhost:1984"     # Search assistant (LLM Summarization) API URL
+LLM_TIMEOUT = 30                           # Timeout for LLM API requests
+LLM_MAX_WINDOWS = 5                        # Maximum content windows to pass to LLM processing
 ```
 
 ## Technical Details
