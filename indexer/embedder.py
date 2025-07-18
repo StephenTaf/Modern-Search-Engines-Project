@@ -5,9 +5,7 @@ import config as cfg
 from duckdb.typing import VARCHAR
 import torch
 from typing import List
-from transformers import AutoTokenizer, AutoModel
 import torch
-import torch.nn.functional as F
 class TextEmbedder:
     def __init__(self, db_path: str, embedding_model: str = cfg.EMBEDDING_MODEL, read_only: bool = True):
         if torch.cuda.is_available():
@@ -69,7 +67,7 @@ class TextEmbedder:
     
     def create_index(self):
         """
-        Create the vector index for embeddings.
+        Create the vector index for embeddings. Helps with ANN search.
         """
         self.vdb.execute("""
             CREATE INDEX IF NOT EXISTS ip_idx ON embeddings USING HNSW (embedding)
@@ -109,10 +107,4 @@ class TextEmbedder:
             window_texts.append(window_text)
         return window_texts
     
-    # def decode_tokens(self, tokens: List[int]) -> str:
-    #     """Decode tokens back to text."""
-    #     return self.embedding_model.tokenizer.decode(tokens, skip_special_tokens=True)
-    # def tokenize_text(self, text: str, add_special_tokens: bool = True) -> List[int]:
-    #     """Tokenize text using the HuggingFace tokenizer."""
-    #     tokens = self.embedding_model.tokenizer.encode(text, add_special_tokens=add_special_tokens)
-    #     return tokens
+ 

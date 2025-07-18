@@ -4,7 +4,7 @@
 openai:
   api_key: "" # Set your API key
   embedding_model: "BAAI/bge-large-en-v1.5"  # OpenAI embedding model to use
-  batch_size: 1000  # Number of texts to process in parallel. Now uses true batching - fewer API calls!
+  batch_size: 50  # Number of texts to process in parallel. Now uses true batching - fewer API calls!
   base_url: "https://api.together.xyz/v1"
 
 # HuggingFace Model Configuration
@@ -38,7 +38,7 @@ file_processing:
 
 # Database Configuration
 database:
-  data_path: "crawlerDB.duckdb"
+  data_path: "crawlerDb.duckdb"
   # JSON file should contain list of dicts with fields: doc_id, sentence, title, url, text, similarity
 
 # Similarity Calculation
@@ -52,7 +52,7 @@ logging:
 
 # Performance Settings
 performance:
-  max_concurrent_files: 10    # Maximum number of files to process concurrently
+  max_concurrent_files: 100    # Maximum number of files to process concurrently
   timeout_seconds: 300        # Request timeout in seconds
   memory_limit_mb: 2048       # Memory limit in MB (optional)
 

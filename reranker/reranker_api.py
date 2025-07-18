@@ -46,81 +46,7 @@ class Database:
         
         return [{'doc_id': row[0], 'title': row[1], 'url': row[2], 'text': row[3]} for row in results]
 
-# Database class for document indexing
-# class Database:
-#     def __init__(self, data_path: str):
-#         """Initialize database by loading JSON file with document records."""
-#         self.data_path = data_path
-#         self.documents = []
-#         self.doc_index = {}  # doc_id -> list of record indices
-#         self.load_data()
-    
-#     def load_data(self):
-#         """Load documents from JSON file and build index."""
-#         try:
-#             with open(self.data_path, 'r', encoding='utf-8') as f:
-#                 self.documents = json.load(f)
-            
-#             if not isinstance(self.documents, list):
-#                 raise ValueError("JSON file must contain a list of document records")
-            
-#             # Build index: doc_id -> list of indices
-#             self.doc_index = {}
-#             for i, doc in enumerate(self.documents):
-#                 if not isinstance(doc, dict):
-#                     raise ValueError(f"Document at index {i} must be a dictionary")
-                
-#                 required_fields = ['doc_id', 'title', 'url', 'text', 'similarity']
-#                 missing_fields = [field for field in required_fields if field not in doc]
-#                 if missing_fields:
-#                     raise ValueError(f"Document at index {i} missing required fields: {missing_fields}")
-                
-#                 doc_id = str(doc['doc_id'])
-#                 if doc_id not in self.doc_index:
-#                     self.doc_index[doc_id] = []
-#                 self.doc_index[doc_id].append(i)
-            
-#             logger.info(f"Loaded {len(self.documents)} documents with {len(self.doc_index)} unique doc_ids from {self.data_path}")
-            
-#         except FileNotFoundError:
-#             raise FileNotFoundError(f"Database file not found: {self.data_path}")
-#         except json.JSONDecodeError as e:
-#             raise ValueError(f"Invalid JSON in database file: {e}")
-#         except Exception as e:
-#             raise ValueError(f"Error loading database: {e}")
-    
-    # def get_documents_by_ids(self, doc_ids: Union[str, List[str]]) -> List[Dict]:
-    #     """Get all documents matching the given doc_id(s)."""
-    #     if isinstance(doc_ids, str):
-    #         doc_ids = [doc_ids]
-        
-    #     result = []
-    #     missing_ids = []
-        
-    #     for doc_id in doc_ids:
-    #         if doc_id in self.doc_index:
-    #             # Get all documents with this doc_id
-    #             for index in self.doc_index[doc_id]:
-    #                 result.append(self.documents[index])
-    #         else:
-    #             missing_ids.append(doc_id)
-        
-    #     if missing_ids:
-    #         logger.warning(f"Documents not found for doc_ids: {missing_ids}")
-        
-    #     return result
-    
-    # def get_all_doc_ids(self) -> List[str]:
-    #     """Get list of all available doc_ids."""
-    #     return list(self.doc_index.keys())
-    
-    # def get_document_count(self) -> int:
-    #     """Get total number of documents."""
-    #     return len(self.documents)
-    
-    # def get_unique_doc_count(self) -> int:
-    #     """Get number of unique doc_ids."""
-    #     return len(self.doc_index)
+
 
 # Global rate limiter state
 class RateLimiter:
@@ -208,14 +134,18 @@ if 'base_url' in config['openai']:
 
 openai_client = OpenAI(**openai_config)
 logger.info("OpenAI client initialized successfully")
+# Initialize ThreadPoolExecutor globally
+import concurrent.futures
+max_workers = config["performance"]["max_concurrent_files"]
+executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
 
 class RerankRequest(BaseModel):
     doc_ids: List[str]  # List of document IDs to rerank
     similarities: Optional[List[float]] = None  # Optional list of similarity scores for each document
     query: str
-    window_size: int = config['sliding_window']['default_window_size']
-    step_size: int = config['sliding_window']['default_step_size']
-    top_n: int = config['sliding_window']['default_top_n']
+    # window_size: int = config['sliding_window']['default_window_size']
+    # step_size: int = config['sliding_window']['default_step_size']
+    # top_n: int = config['sliding_window']['default_top_n']
     call_api: Optional[bool] = True  # Whether to call the model for embeddings
 
 class DocumentScore(BaseModel):
@@ -284,7 +214,8 @@ def get_embedding(text: str) -> List[float]:
     try:
         response = openai_client.embeddings.create(
             model=config['openai']['embedding_model'],
-            input=text
+            input=text,
+            encoding_format="float"
         )
         return response.data[0].embedding
     except Exception as e:
@@ -293,10 +224,12 @@ def get_embedding(text: str) -> List[float]:
 
 def get_embeddings_batch_api(texts: List[str]) -> List[List[float]]:
     """Get embeddings for multiple texts in a single API call."""
+    logger.debug(f"Started thread for {len(texts)} texts")
     try:
         response = openai_client.embeddings.create(
             model=config['openai']['embedding_model'],
-            input=texts  # Send all texts in one request
+            input=texts,  # Send all texts in one request
+            encoding_format="float"
         )
         # Extract embeddings in the same order as input texts
         embeddings = []
@@ -341,8 +274,8 @@ async def get_embeddings_batch(texts: List[str]) -> List[List[float]]:
         batch_info.append((batch_num, total_batches, len(batch)))
         
         # Add a small delay between batch starts to be extra safe with rate limits
-        if use_rpm_control and batch_num < total_batches:
-            await asyncio.sleep(0.1)
+        # if use_rpm_control and batch_num < total_batches:
+        #     await asyncio.sleep(0.1)
     
     # Wait for all API calls to complete in parallel
     logger.debug(f"Waiting for {len(tasks)} parallel API calls to complete...")
@@ -400,7 +333,11 @@ async def rerank(request: RerankRequest):
     try:
         logger.info(f"Processing rerank request for doc_ids: {request.doc_ids} with similarities: {request.similarities}")
         logger.info(f"Query: {request.query[:100]}{'...' if len(request.query) > 100 else ''}")
-        logger.info(f"Window size: {request.window_size}, Step size: {request.step_size}, Top N: {request.top_n}")
+        # Используем значения из конфига
+        window_size = config['sliding_window']['default_window_size']
+        step_size = config['sliding_window']['default_step_size']
+        top_n = config['sliding_window']['default_top_n']
+        logger.info(f"Window size: {window_size}, Step size: {step_size}, Top N: {top_n}")
         
         # Get documents from database
         documents = database.get_documents_by_ids(request.doc_ids)
@@ -449,7 +386,7 @@ async def rerank(request: RerankRequest):
             # Tokenize document without special tokens initially
             doc_tokens = tokenize_text(f"{doc['title']} {doc['text']}", add_special_tokens=False)
             # Create sliding windows
-            windows = create_sliding_windows(doc_tokens, request.window_size, request.step_size)
+            windows = create_sliding_windows(doc_tokens, window_size, step_size)
             total_windows += len(windows)
             # Convert windows back to text
             window_texts = prepare_window_texts(windows)
@@ -461,7 +398,7 @@ async def rerank(request: RerankRequest):
                     'window_id': i,
                     'title': doc['title'],
                     'url': doc['url'],
-                    'original_similarity': request.similarities[idx] if request.similarities else None
+                    'original_similarity': float(request.similarities[idx]) if request.similarities else 0.0
                 })
         
         logger.debug(f"Created {len(all_windows)} windows")
@@ -511,7 +448,7 @@ async def rerank(request: RerankRequest):
                 title=doc.get('title', ''),
                 url=doc.get('url', ''),
                 similarity_score=max_similarity,
-                original_similarity= request.similarities[idx] if request.similarities else None
+                original_similarity=float(request.similarities[idx]) if request.similarities else 0.0
             ))
         
         # Sort documents by similarity score (descending)
@@ -519,7 +456,7 @@ async def rerank(request: RerankRequest):
         
         # Get top N windows
         window_scores.sort(key=lambda x: x.similarity_score, reverse=True)
-        top_windows = window_scores[:request.top_n]
+        top_windows = window_scores[:top_n]
         
         logger.info(f"Reranking completed. Top document: {document_scores[0].doc_id} ({document_scores[0].similarity_score:.4f})")
         
@@ -668,6 +605,10 @@ async def root():
             "/docs": "GET - API documentation"
         }
     }
+@app.on_event("startup")
+async def configure_executor():
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(executor)
 
 if __name__ == "__main__":
     import uvicorn

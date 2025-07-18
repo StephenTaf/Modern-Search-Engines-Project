@@ -13,21 +13,28 @@ import logging
 
 class Retriever:
     """
-    Retriever class for hybrid search using BM25 and embeddings.
+    Retriever class for quick search via ANN
     """
     
     def __init__(self, embedder: TextEmbedder, indexer: Indexer, db_path: str = cfg.DB_PATH, bm25: BM25 = None):
-        """
-        Initialize the retriever with a DuckDB connection, BM25 instance, and optional embedding model.
-        """
         self.vdb = duckdb.connect(db_path, read_only=True)
         self.bm25 = bm25
         self.embedder = embedder
         self.indexer = indexer
 
-    def quick_search(self, query: str, top_k: int = 20, max_candidates: int = cfg.MAX_CANDIDATES, return_unique_docs: bool = False) -> List[Dict]:
-        """        Perform a quick ANN search
+    def quick_search(self, query: str, top_k: int = cfg.TOP_K_RETRIEVAL, max_candidates: int = cfg.MAX_CANDIDATES, return_unique_docs: bool = False) -> List[Dict]:
+        """        
+        Perform a quick ANN search in duckdb using the embedding model.
+        Args:
+            query: The search query string.
+            top_k: Number of top results to return.
+            max_candidates: Maximum number of candidates chunks to fetch using ANN.
+            return_unique_docs: If True, returns only the best result (chunk) per document. (i.e., deduplicates by doc_id)
         Returns a list of dictionaries with document metadata and scores.
+        
+        Notes:
+        - 'embed' is a function registered in duckdb that uses the embedding model to convert text to embeddings.
+         (see embedder.py for details)
         """
    
         results = self.vdb.execute(f"""
@@ -54,7 +61,6 @@ class Retriever:
         for doc_id, chunk_text, similarity in results:
             unique_doc_ids.add(doc_id)
             
-            # Skip if we've already seen this chunk text (same text = same similarity)
             if chunk_text in seen_chunks:
                 continue
             
@@ -77,39 +83,22 @@ class Retriever:
         if return_unique_docs:
             results_list = list(doc_max_scores.values())
         
-        # Get document metadata
-        # doc_data = self.vdb.execute("""
-        #     SELECT id, url, title, text
-        #     FROM urlsDB
-        #     WHERE id IN ({})
-        # """.format(','.join(['?'] * len(unique_doc_ids))), list(unique_doc_ids)).fetchall()
-        # doc_dict = {doc_id: {'url': url, 'title': title, 'text': text} for doc_id, url, title, text in doc_data}
-        
-        # # Add document metadata to results
-        # for result in results_list:
-        #     doc_id = result['doc_id']
-        #     if doc_id in doc_dict:
-        #         result.update(doc_dict[doc_id])
-        #     else:
-        #         result['url'] = None
-        #         result['title'] = None
-        #         result['text'] = None
-        
         # Sort by similarity score
         results_list.sort(key=lambda x: x['similarity'], reverse=True)
         
         # Limit to top_k results
         return results_list[:top_k]
 
+    
+    # deprecated method, we use quick_search instead
     def hybrid_search(self, query: str, top_k: int = 10, alpha: float = 0.5, max_candidates: int = cfg.MAX_CANDIDATES) -> List[Dict]:
             """
-            Memory-efficient hybrid search
+            Perform a hybrid search using BM25 and embedding similarities.
             """
             # Tokenize query for BM25
             
             query_tokens = self.indexer._tokenize_text(query)
             logging.debug(f"Query tokens: {query_tokens}")
-            # Get BM25 scores (returns list of (sentence_id, score) tuples)
             bm25_results = self.bm25.get_scores(query_tokens, limit=max_candidates)
             
             if not bm25_results:
@@ -192,6 +181,7 @@ class Retriever:
             
             doc_results.sort(key=lambda x: x['max_score'], reverse=True)
             return doc_results[:top_k]
+        
     def get_document_text(self, doc_id: int):
         """Retrieve full document text"""
         result = self.vdb.execute(

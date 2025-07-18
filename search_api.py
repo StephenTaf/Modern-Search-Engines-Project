@@ -9,24 +9,30 @@ import logging
 import duckdb
 import time
 import json
-from reranker.reranker_api import rerank, RerankRequest
+# from reranker.reranker_api import rerank, RerankRequest
+import requests
 import uuid
+import re
+from urllib.parse import urlparse
 
-# Initialize Flask app
 app = Flask(__name__)
-CORS(app)  # Enable CORS for frontend requests
+CORS(app)  
 
-# Initialize logging
+
 logging.basicConfig(level=logging.INFO)
 
 # Global variables for the search components
 retriever_instance = None
 indexer_instance = None
 embedder = None
+db_path = cfg.DB_PATH
+if not db_path:
+    logging.error("Database path is not set in config.py. Please set DB_PATH.")
+db_conn = duckdb.connect(db_path, read_only=True)
 
 def initialize_search_engine():
     """Initialize the search engine components"""
-    global retriever_instance, indexer_instance, embedder
+    global retriever_instance, indexer_instance, embedder, db_conn
     
     # Check if already initialized to prevent double initialization
     if retriever_instance is not None:
@@ -37,7 +43,7 @@ def initialize_search_engine():
         _tik = time.time()
         logging.info("Starting the search engine...")
         
-        # Initialize the embedder and BM25
+        # Initialize the embedder (required for enforcing ANN search in duckdb)
         embedder = TextEmbedder(cfg.DB_PATH, embedding_model=cfg.EMBEDDING_MODEL, read_only=True)
         
         if cfg.USE_BM25:
@@ -46,16 +52,9 @@ def initialize_search_engine():
             logging.info("BM25 initialized successfully.")
         
         indexer_instance = indexer.Indexer(embedder=embedder, db_path=cfg.DB_PATH, read_only=True)
-        # logging.info(f"Indexer initialized successfully in {time.time() - _tik:.2f} seconds.")
-        
-        # # Index documents
-        # indexer_instance.index_documents(
-        #     batch_size=cfg.DEFAULT_BATCH_SIZE, 
-        #     embedding_batch_size=cfg.DEFAULT_EMBEDDING_BATCH_SIZE,
-        #     force_reindex=False,
-        # ) 
+        logging.info(f"Indexer initialized successfully in {time.time() - _tik:.2f} seconds.")
+      
         logging.info(f"Document indexing completed successfully in {time.time() - _tik:.2f} seconds.")
-        
         # Initialize the retriever
         retriever_instance = Retriever(embedder=embedder, indexer=indexer_instance, db_path=cfg.DB_PATH)
         
@@ -76,65 +75,61 @@ async def search():
             
         data = request.get_json()
         query = data.get('query', '').strip()
-        top_k = data.get('top_k', cfg.TOP_K_RETRIEVAL)  # Get more results for better visualization
+        top_k = data.get('top_k', cfg.TOP_K_RETRIEVAL)  
         
         query = preprocess_query(query)
+        query_id = data.get('query_id', uuid.uuid4().hex)  # Unique ID for the query
         
         if not query:
             return jsonify({'error': 'Query is required'}), 400
             
-        # Perform search
         results = retriever_instance.quick_search(query, top_k=top_k, return_unique_docs=True)
-        # call reranker API on 8000
-        rerank_request = RerankRequest(
-            doc_ids=[str(result['doc_id']) for result in results],
-            query=query,
-            similarities=[result['similarity'] for result in results] if results else None,
-            call_api=True,  # Call the API for embeddings
+        logging.info((f"Retrieved {len(results)} results for query: {query} in {time.time() - _tik:.2f} seconds"))
+    
+        rerank_request_json = {
+            "doc_ids": [str(result['doc_id']) for result in results],
+            "query": query,
+            "similarities": [result['similarity'] for result in results] if results else None,
+            "call_api": True
+        }
+        reranked_results = requests.post(
+            f"{cfg.RERANKER_API_URL}/rerank",
+            json=rerank_request_json,
+            timeout=cfg.RERANKER_TIMEOUT
         )
-        reranked_results = await rerank(rerank_request)
-        
+        reranked_results = reranked_results.json()
+        logging.info(f"Reranked {len(reranked_results.get('document_scores', []))} results for query: {query} in {time.time() - _tik:.2f} seconds")
         if not reranked_results:
             return jsonify([])
             
         # Transform results to match the UI format
         formatted_results = []
-
-        
-        for i, (document, chunk) in enumerate(zip(reranked_results.document_scores, reranked_results.top_windows), start=1):
+        for i, (document, chunk) in enumerate(zip(reranked_results.get('document_scores', []), reranked_results.get('top_windows', [])), start=1):
             # Extract domain-based topic from URL
-            url = document.url or ''
+            url = document.get('url', '') 
             domain_topic = extract_domain_topic(url)
-            
-            title_text = document.title or ''
-            content_text = chunk.text or ''
-            
-            # Normalize score to 0-1 range
-            score = document.similarity_score or 0.0
-            
+
+            title_text = document.get('title', '') 
+            content_text = chunk.get('text', '')
+
+            score = document.get('similarity_score', 0.0)
+
             formatted_result = {
-                'query_id': uuid.uuid4().hex,  # Unique ID for the query
+                'query_id': query_id,  
                 'rank': i,
                 'url': url,
                 'score': score,
                 'title': title_text or 'No Title',
                 'snippet': (content_text[:200] + '...' if len(content_text) > 200 else content_text) or 'No content available',
                 'topic': domain_topic,
-                'doc_id': document.doc_id or '',
-                'topics': [domain_topic],  # Single domain topic
-                'primaryTopic': domain_topic,  # Add primary topic for D3 visualization
-                'secondaryTopics': []  # No secondary topics needed
+                'doc_id': document.get('doc_id'),
+                'topics': [domain_topic],
+                'primaryTopic': domain_topic,
+                'secondaryTopics': []
             }
             formatted_results.append(formatted_result)
-        
-        logging.info(f"Returning {len(formatted_results)} formatted results for query: {query}")
-        
-        # Log sample results for debugging
-        if formatted_results:
-            sample_topics = list(set([r['topic'] for r in formatted_results[:5]]))
-            logging.info(f"Sample topics: {sample_topics}")
-            logging.info(f"Sample result structure: {json.dumps(formatted_results[0], indent=2)}")
-        logging.info(f"Search completed in {time.time() - _tik:.2f} seconds")
+
+        logging.info(f"Search completed for {query} in {time.time() - _tik:.2f} seconds")
         return jsonify(formatted_results)
         
     except Exception as e:
@@ -148,18 +143,15 @@ def preprocess_query(query: str) -> str:
     # replace tuebingen with tübingen
     query = query.strip().lower()
     if "tuebingen" in query or "tubingen" in query or "tübingen" in query:
-        # Replace with the correct spelling
         query = query.replace('tuebingen', 'tübingen').replace('tubingen', 'tübingen')
     else:
-        # If not present, add it to the query
+        # If not present, we add it to the query to get more Tübingen-related results
         query = f"{query} tübingen"
     query = query.replace('tuebingen', 'tübingen').replace('tubingen', 'tübingen')
     return query.strip().lower()
 
 def extract_domain_topic(url):
     """Extract domain-based topic from URL"""
-    import re
-    from urllib.parse import urlparse
     
     if not url or url == '#':
         return 'unknown'
@@ -180,35 +172,13 @@ def extract_domain_topic(url):
             if len(parts) == 2:
                 main_domain = parts[0]
             else:
-                # For subdomains, try to get the meaningful part
-                # Common patterns: subdomain.domain.tld or domain.domain.tld
-                main_domain = parts[-2]  # Usually the main domain name
+                # For subdomains, we try to get the meaningful part
+                main_domain = parts[-2]  
         else:
             main_domain = domain
         
         # Clean up domain name for display
         main_domain = re.sub(r'[^a-zA-Z0-9-]', '', main_domain)
-        
-        # # Handle special cases for better categorization
-        # domain_mapping = {
-        #     'uni-tuebingen': 'university',
-        #     'tuebingen': 'city-tuebingen',
-        #     'wikipedia': 'wikipedia',
-        #     'google': 'google',
-        #     'facebook': 'facebook',
-        #     'twitter': 'twitter',
-        #     'linkedin': 'linkedin',
-        #     'github': 'github',
-        #     'stackoverflow': 'stackoverflow',
-        #     'youtube': 'youtube'
-        # }
-        
-        # # Check if we have a specific mapping
-        # for key, value in domain_mapping.items():
-        #     if key in main_domain:
-        #         return value
-        
-        # Return the cleaned domain name
         return main_domain if main_domain else 'unknown'
         
     except Exception as e:

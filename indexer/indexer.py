@@ -21,22 +21,21 @@ class Indexer:
             self.vdb.execute("PRAGMA temp_directory='/tmp'")  # Use faster temp directory
             logging.info("Database optimized for bulk operations")
 
-    def index_documents(self, batch_size: int = cfg.DEFAULT_BATCH_SIZE, embedding_batch_size: int = cfg.DEFAULT_EMBEDDING_BATCH_SIZE, force_reindex: bool = False, db_fetch_batch_size: int = None):
+    def index_documents(self, batch_size: int = cfg.DEFAULT_DB_FETCH_BATCH_SIZE, embedding_batch_size: int = cfg.DEFAULT_EMBEDDING_BATCH_SIZE, force_reindex: bool = False):
         """
         Main function to index documents.
-        This function will be called by the indexer script.
+        This function fetches documents from the database that are not already indexed, 
+        processes them in batches, generates embeddings, and stores them in the optimized database structure.
+        
         
         Args:
-            batch_size: Number of documents to process in each batch
+            batch_size: Number of documents to fetch for processing from the database
             embedding_batch_size: Number of embeddings to generate in each sub-batch
             force_reindex: Whether to reindex all documents
-            db_fetch_batch_size: Number of documents to fetch from DB at once (defaults to batch_size)
+    
         """
         _tik = time.time()
         
-        # Use batch_size as default for db_fetch_batch_size if not specified
-        if db_fetch_batch_size is None:
-            db_fetch_batch_size = cfg.DEFAULT_DB_FETCH_BATCH_SIZE
             
         if force_reindex:
             logging.info("Force reindexing enabled. Dropping existing chunks and embeddings.")
@@ -68,7 +67,8 @@ class Indexer:
             return
             
         logging.info("Starting document indexing...")
-        self.vdb.execute("DROP INDEX IF EXISTS ip_idx;")
+        # Drop existing index to recreate it later. Adding documents to an existing index makes it very slow.
+        self.vdb.execute("DROP INDEX IF EXISTS ip_idx;") 
         logging.info(f"Found {doc_count} documents to index")
         
         chunk_id = self._get_next_chunk_id()
@@ -77,7 +77,7 @@ class Indexer:
         # Process documents in batches fetched from database
         offset = 0
         
-        # Use large transaction to prevent B-tree fragmentation 
+        # Using a transaction for bulk inserts. makes it much faster.
         self.vdb.execute("BEGIN TRANSACTION")
         try:
             with tqdm(total=doc_count, desc="Processing documents") as pbar:
@@ -85,7 +85,7 @@ class Indexer:
                     _tik_batch = time.time()
                     
                     # Fetch a batch of documents from database
-                    docs = self.vdb.execute(docs_query, [db_fetch_batch_size, offset]).fetchall()
+                    docs = self.vdb.execute(docs_query, [batch_size, offset]).fetchall()
                     if not docs:
                         break
                     
@@ -119,7 +119,7 @@ class Indexer:
                     pbar.update(len(docs))
 
                     # Commit every 50 batches documents
-                    if offset % (50*db_fetch_batch_size) == 0:
+                    if offset % (50*batch_size) == 0:
                         self.vdb.execute("COMMIT")
                         self.vdb.execute("BEGIN TRANSACTION")
                         logging.info(f"Committed transaction at {offset} documents")
@@ -139,10 +139,7 @@ class Indexer:
         _tik = time.time()
         self.embedder.create_index()  # Create vector index for embeddings
         logging.info(f'Vector index created in {time.time() - _tik:.2f} seconds')
-        
-        # Checkpoint the WAL file to prevent large database sizes
-        # self.checkpoint_database()
-        
+                
         logging.info("Indexing completed!")
     
     def _get_next_chunk_id(self) -> int:
@@ -153,8 +150,7 @@ class Indexer:
     
     def _process_embeddings_batch(self, texts: List[str], start_id: int, batch_size: int):
         """
-        Process embeddings in batches with optimized insertion strategy.
-        Fixes the 3GB/10k docs performance degradation issue.
+        Process embeddings in batches and insert them into the database within a transaction.
         """
         # Collect ALL embeddings first before any database insertions
         all_embedding_data = []
@@ -166,12 +162,10 @@ class Indexer:
 
             for j, embedding in enumerate(embeddings):
                 chunk_id = start_id + i + j
-                # Store as list for DuckDB FLOAT[384] compatibility
                 all_embedding_data.append((chunk_id, embedding.tolist()))
             
             logging.debug(f"Generated {len(batch)} embeddings in {time.time() - _tik:.2f} seconds")
 
-        # Single bulk insertion (uses existing transaction from main indexing loop)
         if all_embedding_data:
             _tik = time.time()
             
@@ -181,33 +175,8 @@ class Indexer:
             
             logging.debug(f"Bulk inserted {len(all_embedding_data)} embeddings in {time.time() - _tik:.2f} seconds")
     
-    def checkpoint_database(self):
-        """
-        Checkpoint the WAL file to reduce database size.
-        This should be called after indexing to prevent large file sizes.
-        """
-        logging.info("Checkpointing WAL file to reduce database size...")
-        _tik = time.time()
-        
-        # Force WAL checkpoint to move data from WAL to main database file
-        self.vdb.execute("PRAGMA wal_checkpoint=FULL")
-        
-        # Also optimize the database
-        self.vdb.execute("PRAGMA optimize")
-        
-        logging.info(f"Database checkpointing completed in {time.time() - _tik:.2f} seconds")
+
     
-    def vacuum_database(self):
-        """
-        Vacuum the database to reclaim unused space.
-        Call this if you've had storage issues and want to compact the database.
-        """
-        logging.info("Vacuuming database to reclaim space...")
-        _tik = time.time()
-        
-        self.vdb.execute("VACUUM")
-        
-        logging.info(f"Database vacuum completed in {time.time() - _tik:.2f} seconds")
 
 
 
