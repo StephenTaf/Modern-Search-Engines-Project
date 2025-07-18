@@ -44,23 +44,20 @@ class Indexer:
             self.vdb.execute("DROP INDEX IF EXISTS ip_idx;")
             self.vdb.execute("DROP INDEX IF EXISTS idx_chunks_opt_doc_id;")
             self.vdb.execute("VACUUM")  # Compact the database
-            # Get total count without loading all documents
-            doc_count = self.vdb.execute("SELECT COUNT(*) FROM urlsDB").fetchone()[0]
-            docs_query = "SELECT id, title, text FROM urlsDB ORDER BY id LIMIT ? OFFSET ?"
+            # Get all document IDs for reindexing
+            doc_ids = [row[0] for row in self.vdb.execute("SELECT id FROM urlsDB ORDER BY id").fetchall()]
         else:
-            # Get total count of unindexed documents
-            doc_count = self.vdb.execute("""SELECT COUNT(DISTINCT docs.id)
-                                           FROM urlsDB docs
-                                           LEFT JOIN chunks_optimized chunks 
-                                               ON docs.id = chunks.doc_id
-                                           WHERE chunks.doc_id IS NULL""").fetchone()[0]
-            docs_query = """SELECT DISTINCT docs.id, docs.title, docs.text
-                           FROM urlsDB docs
-                           LEFT JOIN chunks_optimized chunks 
-                               ON docs.id = chunks.doc_id
-                           WHERE chunks.doc_id IS NULL
-                           ORDER BY docs.id
-                           LIMIT ? OFFSET ?"""
+            # Get all unindexed document IDs upfront to avoid offset issues
+            doc_ids = [row[0] for row in self.vdb.execute("""
+                SELECT DISTINCT docs.id
+                FROM urlsDB docs
+                LEFT JOIN chunks_optimized chunks 
+                    ON docs.id = chunks.doc_id
+                WHERE chunks.doc_id IS NULL
+                ORDER BY docs.id
+            """).fetchall()]
+        
+        doc_count = len(doc_ids)
         
         if doc_count == 0:
             logging.info("All documents are already indexed. Skipping indexing.")
@@ -74,18 +71,28 @@ class Indexer:
         chunk_id = self._get_next_chunk_id()
         initial_chunk_id = chunk_id
         
-        # Process documents in batches fetched from database
-        offset = 0
+        # Process documents in batches using the collected document IDs
+        processed_docs = 0
         
         # Using a transaction for bulk inserts. makes it much faster.
         self.vdb.execute("BEGIN TRANSACTION")
         try:
             with tqdm(total=doc_count, desc="Processing documents") as pbar:
-                while offset < doc_count:
+                while processed_docs < doc_count:
                     _tik_batch = time.time()
                     
-                    # Fetch a batch of documents from database
-                    docs = self.vdb.execute(docs_query, [batch_size, offset]).fetchall()
+                    # Get batch of document IDs to process
+                    batch_doc_ids = doc_ids[processed_docs:processed_docs + batch_size]
+                    if not batch_doc_ids:
+                        break
+                    
+                    # Fetch document data for this batch of IDs
+                    id_placeholders = ",".join("?" for _ in batch_doc_ids)
+                    docs = self.vdb.execute(
+                        f"SELECT id, title, text FROM urlsDB WHERE id IN ({id_placeholders}) ORDER BY id",
+                        batch_doc_ids
+                    ).fetchall()
+                    
                     if not docs:
                         break
                     
@@ -115,14 +122,14 @@ class Indexer:
                     if batch_texts:
                         self._process_embeddings_batch(batch_texts, chunk_id - len(batch_texts), embedding_batch_size)
                     
-                    offset += len(docs)
+                    processed_docs += len(docs)
                     pbar.update(len(docs))
 
-                    # Commit every 50 batches documents
-                    if offset % (50*batch_size) == 0:
+                    # Commit every 10 batches documents
+                    if processed_docs % (10*batch_size) == 0:
                         self.vdb.execute("COMMIT")
                         self.vdb.execute("BEGIN TRANSACTION")
-                        logging.info(f"Committed transaction at {offset} documents")
+                        logging.info(f"Committed transaction at {processed_docs} documents")
                     
                     logging.debug(f"Processed batch of {len(docs)} documents in {time.time() - _tik_batch:.2f} seconds")
             
