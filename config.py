@@ -14,7 +14,7 @@ TOP_K_RETRIEVAL = 200  # Default number of top results to return in retrieval
 TOP_K_RERANKING = 100  # Default number of top results to return in reranking
 
 # Reranker API Configuration
-RERANKER_API_URL = "http://localhost:8000"  # Base URL for the reranker API# Whether to use the reranker API
-RERANKER_TIMEOUT = 100  # Timeout for reranker API requests in seconds
+RERANKER_API_URL = "http://localhost:8000"  # Base URL for the reranker API
+RERANKER_TIMEOUT = 200  # Timeout for reranker API requests in seconds
 
 USE_BM25 = False  # Whether to use BM25 for indexing, we do not use it anymore

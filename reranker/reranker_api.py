@@ -274,8 +274,8 @@ async def get_embeddings_batch(texts: List[str]) -> List[List[float]]:
         batch_info.append((batch_num, total_batches, len(batch)))
         
         # Add a small delay between batch starts to be extra safe with rate limits
-        # if use_rpm_control and batch_num < total_batches:
-        #     await asyncio.sleep(0.1)
+        if use_rpm_control and batch_num < total_batches:
+            await asyncio.sleep(0.1)
     
     # Wait for all API calls to complete in parallel
     logger.debug(f"Waiting for {len(tasks)} parallel API calls to complete...")
@@ -337,8 +337,9 @@ async def rerank(request: RerankRequest):
         window_size = config['sliding_window']['default_window_size']
         step_size = config['sliding_window']['default_step_size']
         top_n = config['sliding_window']['default_top_n']
-        logger.info(f"Window size: {window_size}, Step size: {step_size}, Top N: {top_n}")
-        
+        max_window_per_doc = config['sliding_window']['max_windows_per_document']
+        logger.info(f"Window size: {window_size}, Step size: {step_size}, Top N: {top_n}, Max windows per doc: {max_window_per_doc}")
+
         # Get documents from database
         documents = database.get_documents_by_ids(request.doc_ids)
         
@@ -381,12 +382,14 @@ async def rerank(request: RerankRequest):
         # Process documents and collect all windows
         all_windows = []  # will keep (doc_id, window_text, window_id)
         total_windows = 0
+        _tik = time.time()
         for idx, doc in enumerate(documents):
             logger.debug(f"Processing document: {doc['doc_id']}")    
             # Tokenize document without special tokens initially
             doc_tokens = tokenize_text(f"{doc['title']} {doc['text']}", add_special_tokens=False)
             # Create sliding windows
             windows = create_sliding_windows(doc_tokens, window_size, step_size)
+            windows = windows[:max_window_per_doc]  # Limit to max windows per document
             total_windows += len(windows)
             # Convert windows back to text
             window_texts = prepare_window_texts(windows)
@@ -400,9 +403,9 @@ async def rerank(request: RerankRequest):
                     'url': doc['url'],
                     'original_similarity': float(request.similarities[idx]) if request.similarities else 0.0
                 })
-        
-        logger.debug(f"Created {len(all_windows)} windows")
-        
+
+        logger.debug(f"Created {len(all_windows)} windows in {time.time() - _tik:.2f} seconds")
+
         # Process all windows in batches to get embeddings
         await process_windows_batched(all_windows)
         
@@ -461,8 +464,8 @@ async def rerank(request: RerankRequest):
         logger.info(f"Reranking completed. Top document: {document_scores[0].doc_id} ({document_scores[0].similarity_score:.4f})")
         
         return RerankResponse(
-            document_scores=document_scores,
-            top_windows=top_windows,
+            document_scores=document_scores[:top_n],
+            top_windows=top_windows[:top_n],
             total_documents=len(documents),
             total_windows=total_windows
         )

@@ -8,12 +8,13 @@ from indexer import indexer
 import logging
 import duckdb
 import time
-import json
-# from reranker.reranker_api import rerank, RerankRequest
-import requests
 import uuid
 import re
 from urllib.parse import urlparse
+import httpx
+import asyncio
+import os
+from pathlib import Path
 
 app = Flask(__name__)
 CORS(app)  
@@ -92,12 +93,13 @@ async def search():
             "similarities": [result['similarity'] for result in results] if results else None,
             "call_api": True
         }
-        reranked_results = requests.post(
-            f"{cfg.RERANKER_API_URL}/rerank",
-            json=rerank_request_json,
-            timeout=cfg.RERANKER_TIMEOUT
-        )
-        reranked_results = reranked_results.json()
+        async with httpx.AsyncClient(timeout=cfg.RERANKER_TIMEOUT) as client:
+            response = await client.post(
+                f"{cfg.RERANKER_API_URL}/rerank",
+                json=rerank_request_json
+            )
+            reranked_results = response.json()
+            # await client.aclose()
         logging.info(f"Reranked {len(reranked_results.get('document_scores', []))} results for query: {query} in {time.time() - _tik:.2f} seconds")
         if not reranked_results:
             return jsonify([])
@@ -184,6 +186,178 @@ def extract_domain_topic(url):
     except Exception as e:
         logging.warning(f"Error extracting domain from URL {url}: {e}")
         return 'unknown'
+    
+    
+@app.route('/api/batch_search', methods=['POST'])
+async def batch_search():
+    """
+    Batch search endpoint that reads queries from queries.txt file and produces results
+    according to format:
+    - Input: queries.txt with format "query_num<tab>query_text" per line
+    - Output: results with format "query_num<tab>rank<tab>url<tab>score" per line
+    """
+    try:
+        # Look for queries.txt in the project root
+        queries_file = Path(__file__).parent / 'queries.txt'
+        
+        if not queries_file.exists():
+            return jsonify({'error': 'queries.txt file not found'}), 404
+            
+        if not retriever_instance:
+            return jsonify({'error': 'Search engine not initialized'}), 500
+        
+        # Read queries from file in the specified format: query_num<tab>query_text
+        queries = []
+        with open(queries_file, 'r', encoding='utf-8') as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                # Split by tab to get query number and query text
+                parts = line.split('\t')
+                if len(parts) >= 2:
+                    query_num = parts[0].strip()
+                    query_text = parts[1].strip()
+                    queries.append((query_num, query_text))
+                else:
+                    logging.warning(f"Invalid format in queries.txt line {line_num}: {line}")
+        
+        if not queries:
+            return jsonify({'error': 'No valid queries found in queries.txt'}), 400
+        
+        logging.info(f"Processing {len(queries)} queries from queries.txt")
+        
+        # Process queries in parallel
+        async def process_single_query(query_num, query_text):
+            """Process a single query and return results"""
+            try:
+                _tik = time.time()
+                
+                # Preprocess query
+                processed_query = preprocess_query(query_text)
+                
+                # Get search results
+                results = retriever_instance.quick_search(
+                    processed_query, 
+                    top_k=cfg.TOP_K_RETRIEVAL,
+                    return_unique_docs=True
+                )
+                
+                if not results:
+                    logging.info(f"No results found for query {query_num}: '{query_text}'")
+                    return []
+                
+                # Prepare rerank request
+                rerank_request_json = {
+                    "doc_ids": [str(result['doc_id']) for result in results],
+                    "query": processed_query,
+                    "similarities": [result['similarity'] for result in results],
+                    "call_api": True
+                }
+                
+                logging.info(f"Reranking {len(results)} results for query {query_num}: '{query_text}'")
+                
+                # Make reranker API call in a non-blocking way
+                async with httpx.AsyncClient(timeout=cfg.RERANKER_TIMEOUT) as client:
+                    response = await client.post(
+                        f"{cfg.RERANKER_API_URL}/rerank",
+                        json=rerank_request_json
+                    )
+                    reranked_results = response.json()
+                
+                # Format results
+                query_results = []
+                for rank, document in enumerate(
+                    reranked_results.get('document_scores', []), 
+                    start=1
+                ):
+                    url = document.get('url', '')
+                    score = document.get('similarity_score', 0.0)
+                    
+                    result_entry = {
+                        'query_num': query_num,
+                        'rank': rank,
+                        'url': url,
+                        'score': f"{score:.3f}",
+                        'formatted_line': f"{query_num}\t{rank}\t{url}\t{score:.3f}"
+                    }
+                    query_results.append(result_entry)
+                
+                logging.info(f"Processed query {query_num}: '{query_text}' in {time.time() - _tik:.2f}s")
+                return query_results
+                
+            except Exception as e:
+                logging.error(f"Error processing query {query_num} '{query_text}': {str(e)}")
+                return []
+        
+        # Process all queries in parallel using asyncio.gather
+        _batch_tik = time.time()
+        tasks = [process_single_query(query_num, query_text) for query_num, query_text in queries]
+        results_list = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Flatten results and handle exceptions
+        all_results = []
+        for i, results in enumerate(results_list):
+            if isinstance(results, Exception):
+                logging.error(f"Exception in query {queries[i][0]}: {results}")
+            else:
+                all_results.extend(results)
+        
+        
+        response_data = {
+            'total_queries': len(queries),
+            'total_results': len(all_results),
+            'results': all_results,
+            'queries_processed': [{'query_num': qn, 'query_text': qt} for qn, qt in queries],
+            'processing_time': f"{time.time() - _batch_tik:.2f}s"
+        }
+        
+        logging.info(f"Batch search completed: {len(queries)} queries, {len(all_results)} total results in {time.time() - _batch_tik:.2f}s")
+        return jsonify(response_data)
+        
+    except Exception as e:
+        logging.error(f"Batch search error: {str(e)}")
+        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+
+@app.route('/api/batch_search_file', methods=['POST'])
+async def batch_search_to_file():
+    """
+    Batch search endpoint that saves results to a file in the format:
+    query_num<tab>rank<tab>url<tab>score per line
+    """
+    try:
+        _tik = time.time()
+        # Get results from batch search
+        batch_results = await batch_search()
+        
+        if batch_results.status_code != 200:
+            return batch_results
+        
+        results_data = batch_results.get_json()
+        
+        # Save to file in the specified format
+        output_file = Path(__file__).parent / 'batch_search_results.txt'
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            for result in results_data['results']:
+                # Write in format: query_num<tab>rank<tab>url<tab>score
+                f.write(result['formatted_line'] + '\n')
+
+        logging.info(f"Batch search results saved to {output_file} in {time.time() - _tik:.2f}s")
+
+        return jsonify({
+            'message': f'Results saved to {output_file}',
+            'total_queries': results_data['total_queries'],
+            'total_results': results_data['total_results'],
+            'output_file': str(output_file),
+            'format': 'query_num<tab>rank<tab>url<tab>score per line'
+        })
+        
+    except Exception as e:
+        logging.error(f"Batch search to file error: {str(e)}")
+        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
 @app.route('/api/health', methods=['GET'])
 def health():

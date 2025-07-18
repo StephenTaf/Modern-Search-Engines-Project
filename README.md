@@ -147,10 +147,44 @@ The bubble visualization shows search results as interactive circles:
 - **Scroll** = zoom in/out
 
 ### API Usage
+
+**Single Query Search**
 ```bash
 curl -X POST http://localhost:5000/api/search \
   -H "Content-Type: application/json" \
   -d '{"query": "university research tübingen", "top_k": 10}'
+```
+
+**Batch Query Processing**
+
+The search engine supports efficient batch processing of multiple queries with parallel execution:
+
+1. **Prepare queries file**: Create a `queries.txt` file in the project root with the format:
+   ```
+   query_num<tab>query_text
+   ```
+   Example:
+   ```
+   1	university research tübingen
+   2	student life tübingen
+   3	computer science courses
+   ```
+
+2. **Process batch queries** (returns JSON response):
+   ```bash
+   curl -X POST http://localhost:5000/api/batch_search
+   ```
+
+3. **Process and save to file** (saves results to `batch_search_results.txt`):
+   ```bash
+   curl -X POST http://localhost:5000/api/batch_search_file
+   ```
+
+**Batch Processing Features:**
+- **Parallel Execution**: All queries processed simultaneously using asyncio.gather
+- **Error Handling**: Individual query failures don't stop batch processing
+- **File Output**: Results saved in format: `query_num<tab>rank<tab>url<tab>score`
+
 ```
 
 

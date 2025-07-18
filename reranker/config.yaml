@@ -21,6 +21,7 @@ sliding_window:
   default_step_size: 400    # Default step size for sliding windows
   default_top_n: 100         # Default number of top windows to return
   position_boost_decay: 0.1  # Decay factor for position-based boosting (higher = more decay)
+  max_windows_per_document: 50  # Maximum number of windows to consider per document, optional limit to avoid excessive processing of large documents
 
 # Server Configuration
 server:
