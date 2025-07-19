@@ -284,3 +284,48 @@ svg::before {
     font-size: 13px;
   }
 }
+
+#main-content {
+  gap: 20px;
+}
+
+#llm-response-text {
+  background: #f9f9f9;
+  padding: 10px;
+  border-radius: 8px;
+  max-height: 800px;
+  overflow-y: auto;
+}
+
+#llmResponse {
+  font-family: Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  background-color: #fafafa;
+  border-left: 4px solid #ccc;
+  padding: 16px;
+  margin-left: 20px;
+  overflow-y: auto;
+  max-height: 90vh;
+}
+
+#llmResponse h3 {
+  font-size: 18px;
+  color: #333;
+  margin-top: 1em;
+  margin-bottom: 0.5em;
+}
+
+#llmResponse strong {
+  color: #222;
+}
+
+#llmResponse ul {
+  padding-left: 20px;
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+
+#llmResponse li {
+  margin-bottom: 0.3em;
+}

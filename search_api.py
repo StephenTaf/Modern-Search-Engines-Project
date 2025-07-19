@@ -123,11 +123,8 @@ async def search():
                 'score': score,
                 'title': title_text or 'No Title',
                 'snippet': (content_text[:200] + '...' if len(content_text) > 200 else content_text) or 'No content available',
-                'topic': domain_topic,
+                'domain': domain_topic,
                 'doc_id': document.get('doc_id'),
-                'topics': [domain_topic],
-                'primaryTopic': domain_topic,
-                'secondaryTopics': []
             }
             formatted_results.append(formatted_result)
         top_windows = reranked_results.get('top_windows', [])
@@ -146,6 +143,7 @@ async def search():
             "llm_response": llm_response.get('response', ''),
             "documents": formatted_results,
         }
+        print(response['llm_response'])
         logging.info(f"Search completed for {query} in {time.time() - _tik:.2f} seconds")
         return jsonify(response)
 

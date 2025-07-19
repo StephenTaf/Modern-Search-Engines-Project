@@ -90,7 +90,17 @@ function loadDataAndRender(query) {
                 .attr("font-size", "18px")
                 .attr("fill", "#666")
                 .text("No results found for your query.");
+
+             // Clear LLM response if there's no result
+            document.getElementById("llm-response-text").textContent = "No AI answer available.";
             return;
+        }
+
+        const llmResponseBox = document.getElementById("llm-response-text");
+        if (window.currentLLMResponse) {
+            llmResponseBox.innerHTML = formatLLMResponse(window.currentLLMResponse);
+        } else {
+            llmResponseBox.textContent = "No AI answer available.";
         }
 
         // Store data globally and show controls
@@ -231,32 +241,23 @@ function renderBubbleChart(data) {
                 .style("cursor", "-webkit-grab");
         });
 
-    // Parse topics into arrays and identify primary/secondary
-    data.forEach(d => {
-        if (typeof d.topic === 'string') {
-            d.topics = d.topic.split(",").map(t => t.trim());
-        } else if (Array.isArray(d.topics)) {
-            // Already parsed
-        } else {
-            d.topics = ['general'];
-        }
-        d.primaryTopic = d.topics[0];
-        d.secondaryTopics = d.topics.slice(1);
-    });
-
-    // Group by primary topic
-    const topics = d3.group(data, d => d.primaryTopic);
-    const clusters = Array.from(topics, ([topic, docs]) => ({
-        topic,
+    // Group by domain
+    const domains = d3.group(data, d => d.domain);
+    const clusters = Array.from(domains, ([domain, docs]) => ({
+        domain,
         docs,
         count: docs.length,
-        totalScore: d3.sum(docs, d => d.raw_score), // Use raw_score instead of normalized score
-        avgScore: d3.mean(docs, d => d.raw_score),  // Use raw_score for average too
+        totalScore: d3.sum(docs, d => d.score), // Use raw_score instead of normalized score
+        avgScore: d3.mean(docs, d => d.score),  // Use raw_score for average too
         totalNormalizedScore: d3.sum(docs, d => d.score) // Keep normalized for other purposes
     }));
 
-    console.log("Topics found:", Array.from(topics.keys()));
+    console.log("Data:", data);
+
+    console.log("Domains found:", Array.from(domains.keys()));
     console.log("Clusters:", clusters);
+    console.log(clusters.map(d => d.totalScore));
+
 
     // Handle case where no clusters are found
     if (clusters.length === 0) {
@@ -275,64 +276,26 @@ function renderBubbleChart(data) {
 
     const docRadiusScale = d3.scaleLinear()
         .domain(d3.extent(data, d => d.score))
-        .range([18, 50]); // Increased minimum size for better visibility
+        .range([18, 50]);
 
     const clusterRadiusScale = d3.scaleSqrt()
         .domain([0, d3.max(clusters, d => d.totalScore)])
-        .range([60, 140]); // Increased cluster radius range
+        .range([30, 250]); // Increased cluster radius range
 
     // Position clusters using a more spread out approach in virtual space
     const numClusters = clusters.length;
     const centerX = virtualWidth / 2;
     const centerY = virtualHeight / 2;
     
-    // Sort clusters by total score (descending) to identify the top cluster
-    const sortedClusters = [...clusters].sort((a, b) => b.totalScore - a.totalScore);
-    const topCluster = sortedClusters[0];
-    const otherClusters = sortedClusters.slice(1);
-    
-    console.log("Top cluster (will be centered):", topCluster.topic, "Score:", topCluster.totalScore);
-    
-    // Always place the top scoring cluster in the center
-    topCluster.x = centerX;
-    topCluster.y = centerY;
-    
-    // Position other clusters around the center cluster
-    if (otherClusters.length === 0) {
-        // Only one cluster - already positioned in center
-    } else if (otherClusters.length === 1) {
-        // One additional cluster - place it to the right of center
-        otherClusters[0].x = centerX + virtualWidth * 0.15;
-        otherClusters[0].y = centerY;
-    } else if (otherClusters.length === 2) {
-        // Two additional clusters - place them left and right
-        otherClusters[0].x = centerX - virtualWidth * 0.15;
-        otherClusters[0].y = centerY;
-        otherClusters[1].x = centerX + virtualWidth * 0.15;
-        otherClusters[1].y = centerY;
-    } else if (otherClusters.length === 3) {
-        // Three additional clusters - triangular arrangement around center
-        const positions = [
-            [centerX, centerY - virtualHeight * 0.15],        // top
-            [centerX - virtualWidth * 0.13, centerY + virtualHeight * 0.1],  // bottom-left
-            [centerX + virtualWidth * 0.13, centerY + virtualHeight * 0.1]   // bottom-right
-        ];
-        otherClusters.forEach((cluster, i) => {
-            cluster.x = positions[i][0];
-            cluster.y = positions[i][1];
-        });
-    } else {
-        // Four or more additional clusters - circular arrangement around center
-        const angleStep = (2 * Math.PI) / otherClusters.length;
-        const clusterDistance = Math.min(virtualWidth, virtualHeight) * 0.12; // Tight circle around center
-        
-        otherClusters.forEach((cluster, i) => {
-            const angle = i * angleStep;
-            cluster.x = centerX + Math.cos(angle) * clusterDistance;
-            cluster.y = centerY + Math.sin(angle) * clusterDistance;
-        });
-    }
-    
+    // First simulation to find out the clustercenters
+    const clusterSim = d3.forceSimulation(clusters)
+        .force("charge", d3.forceManyBody().strength(1000))
+        .force("center", d3.forceCenter(centerX, centerY))
+        .force("collide", d3.forceCollide().radius(d => clusterRadiusScale(d.totalScore)+18))
+        .stop();
+
+    for (let i = 0; i < 200; i++) clusterSim.tick();
+
     // Fix cluster positions and set radius
     clusters.forEach(cluster => {
         cluster.fx = cluster.x;
@@ -340,16 +303,16 @@ function renderBubbleChart(data) {
         cluster.radius = clusterRadiusScale(cluster.totalScore);
     });
 
-    console.log("Cluster positions:", clusters.map(c => ({topic: c.topic, x: c.x, y: c.y})));
+    console.log("Cluster positions:", clusters.map(c => ({domain: c.domain, x: c.x, y: c.y})));
 
     // Calculate better initial positioning based on content bounds
     let contentBounds, initialTransform;
     try {
         contentBounds = {
-            minX: Math.min(...clusters.map(c => c.x)) - 100,
-            maxX: Math.max(...clusters.map(c => c.x)) + 100,
-            minY: Math.min(...clusters.map(c => c.y)) - 100,
-            maxY: Math.max(...clusters.map(c => c.y)) + 100
+            minX: Math.min(...clusters.map(c => c.x)) - 50,
+            maxX: Math.max(...clusters.map(c => c.x)) + 50,
+            minY: Math.min(...clusters.map(c => c.y)) - 50,
+            maxY: Math.max(...clusters.map(c => c.y)) + 50
         };
         
         console.log("Content bounds calculated:", contentBounds);
@@ -358,16 +321,21 @@ function renderBubbleChart(data) {
         const contentHeight = contentBounds.maxY - contentBounds.minY;
         
         // Calculate scale to fit content in canvas with some padding
-        const scaleX = (canvasWidth * 0.6) / contentWidth; // Reduced from 0.8 for more zoom
-        const scaleY = (canvasHeight * 0.6) / contentHeight; // Reduced from 0.8 for more zoom
+        const padding = 0.35;
+        const scaleX = (canvasWidth * (1-padding)) / contentWidth; // Reduced from 0.8 for more zoom
+        const scaleY = (canvasHeight * (1-padding)) / contentHeight; // Reduced from 0.8 for more zoom
         const optimalScale = Math.min(scaleX, scaleY, 1.2); // Increased from 0.8 for better readability
         
         // Center the content
         const contentCenterX = (contentBounds.minX + contentBounds.maxX) / 2;
         const contentCenterY = (contentBounds.minY + contentBounds.maxY) / 2;
         
-        const translateX = canvasWidth / 2 - contentCenterX * optimalScale;
-        const translateY = canvasHeight / 2 - contentCenterY * optimalScale;
+        const translateX = canvasWidth / 2 - contentCenterX * optimalScale *1.2;//Got these -180 and -70 from testing
+        const translateY = canvasHeight / 2 - contentCenterY * optimalScale *1.2;
+
+        console.log(`Content Center: (${contentCenterX}, ${contentCenterY})`);
+        console.log(`Viewport Center: (${canvasWidth / 2}, ${canvasHeight / 2})`);
+        console.log(`Calculated Translate: (${translateX}, ${translateY})`);
 
         // Reset zoom to fit content initially - show all clusters at once
         initialTransform = d3.zoomIdentity
@@ -386,15 +354,15 @@ function renderBubbleChart(data) {
     
     svg.call(zoom.transform, initialTransform);
 
-    // Map topic names to cluster centers
-    const clusterCenterMap = Object.fromEntries(clusters.map(c => [c.topic, c]));
+    // Map domain names to cluster centers
+    const clusterCenterMap = Object.fromEntries(clusters.map(c => [c.domain, c]));
 
     // Position documents around their cluster centers with improved force simulation
     const docSim = d3.forceSimulation(data)
-        .force("x", d3.forceX(d => clusterCenterMap[d.primaryTopic]?.x || centerX).strength(0.3))
-        .force("y", d3.forceY(d => clusterCenterMap[d.primaryTopic]?.y || centerY).strength(0.3))
-        .force("collision", d3.forceCollide().radius(d => Math.max(18, docRadiusScale(d.score)) + 6).strength(0.9))
-        .force("charge", d3.forceManyBody().strength(-80))
+        .force("x", d3.forceX(d => clusterCenterMap[d.domain]?.x || centerX).strength(0.8))
+        .force("y", d3.forceY(d => clusterCenterMap[d.domain]?.y || centerY).strength(0.8))
+        .force("collision", d3.forceCollide().radius(d => Math.max(18, docRadiusScale(d.score)) + 4))
+        .force("charge", d3.forceManyBody().strength(20))
         .alphaDecay(0.01) // Slower decay for better settling
         .velocityDecay(0.2) // Less velocity decay
         .on("tick", ticked);
@@ -402,7 +370,7 @@ function renderBubbleChart(data) {
     // Add custom force to keep nodes within cluster bounds
     docSim.force("cluster", () => {
         data.forEach(d => {
-            const cluster = clusterCenterMap[d.primaryTopic];
+            const cluster = clusterCenterMap[d.domain];
             if (cluster) {
                 const dx = d.x - cluster.x;
                 const dy = d.y - cluster.y;
@@ -418,6 +386,7 @@ function renderBubbleChart(data) {
         });
     });
 
+
     const clusterGroups = mainGroup.selectAll(".cluster")
         .data(clusters)
         .enter().append("g")
@@ -426,10 +395,10 @@ function renderBubbleChart(data) {
 
     // Add background circles for cluster labels with better sizing
     clusterGroups.append("circle")
-        .attr("r", d => Math.max(40, clusterRadiusScale(d.totalScore) * 0.8))
-        .attr("fill", d => color(d.topic))
+        .attr("r", d => Math.max(30, clusterRadiusScale(d.totalScore)))
+        .attr("fill", d => color(d.domain))
         .attr("fill-opacity", 0.08)
-        .attr("stroke", d => color(d.topic))
+        .attr("stroke", d => color(d.domain))
         .attr("stroke-width", 3)
         .attr("stroke-opacity", 0.4)
         .attr("stroke-dasharray", "5,5");
@@ -438,13 +407,23 @@ function renderBubbleChart(data) {
         .attr("text-anchor", "middle")
         .attr("dy", ".3em")
         .style("font-weight", "bold")
-        .style("font-size", "16px")
+        .style("font-size", "20px")
         .style("pointer-events", "none")
-        .text(d => d.topic.toUpperCase())
-        .attr("fill", d => color(d.topic))
+        .text(d => d.domain.toUpperCase())
+        .attr("fill", d => color(d.domain))
         .attr("stroke", "white")
         .attr("stroke-width", 2)
         .attr("paint-order", "stroke");
+
+    // Step 1: Determine top 10 documents by score
+    const topDocs = data
+    .slice() // make a shallow copy
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10);
+
+    const topDocSet = new Set(topDocs);
+
+    console.log("topDocSet:", topDocSet);
 
     const nodeGroups = mainGroup.selectAll(".doc-node-group")
         .data(data)
@@ -454,8 +433,8 @@ function renderBubbleChart(data) {
     const node = nodeGroups.append("circle")
         .attr("class", "doc-node")
         .attr("r", d => Math.max(18, docRadiusScale(d.score)))
-        .attr("fill", d => color(d.primaryTopic))
-        .attr("fill-opacity", 0.8)
+        .attr("fill", d => color(d.domain))
+        .attr("fill-opacity", d => topDocSet.has(d) ? 0.9 : 0.7)
         .attr("stroke", "#333")
         .attr("stroke-width", 1.5)
         .attr("stroke-opacity", 0.9);
@@ -481,7 +460,7 @@ function renderBubbleChart(data) {
         .on("mouseover", (event, d) => {
             d3.select(event.currentTarget).select("circle")
                 .transition().duration(150)
-                .attr("fill-opacity", 0.9)
+                .attr("fill-opacity", 1)
                 .attr("stroke-width", 2.5);
             
             tooltip.style("visibility", "visible")
@@ -494,27 +473,13 @@ function renderBubbleChart(data) {
         .on("mouseout", (event, d) => {
             d3.select(event.currentTarget).select("circle")
                 .transition().duration(150)
-                .attr("fill-opacity", 0.7)
+                .attr("fill-opacity", d => topDocSet.has(d) ? 0.9 : 0.7)
                 .attr("stroke-width", 1.5);
             
             tooltip.style("visibility", "hidden");
         })
         .on("click", (event, d) => window.open(d.url, "_blank"))
         .style("cursor", "pointer");
-
-    // const topDocs = Array.from(d3.group(data, d => d.primaryTopic), ([topic, docs]) =>
-    //     docs.sort((a, b) => d3.descending(a.score, b.score)).slice(0, 2)
-    //     ).flat();
-
-    // const labels = mainGroup.selectAll(".doc-label")
-    //     .data(topDocs)
-    //     .enter()
-    //     .append("text")
-    //     .attr("class", "doc-label")
-    //     .attr("text-anchor", "middle")
-    //     .attr("font-size", "12px")
-    //     .attr("fill", "#333")
-    //     .text(d => d.title);
 
     // Remove any existing tooltips before creating a new one
     d3.selectAll(".tooltip").remove();
@@ -676,11 +641,12 @@ function performSearch() {
     queryInput.disabled = true;
 
     const header = document.getElementById("header");
-    const results = document.getElementById("results");
+    const mainContent = document.getElementById("main-content");
+    const llmResponseBox = document.getElementById("llm-response-text");
 
     // Remove centered class after first submission
     header.classList.remove("centered");
-    results.style.display = "block";
+    mainContent.style.display = "flex";
 
     // Load & visualize
     loadDataAndRender(query).finally(() => {
@@ -751,7 +717,7 @@ function renderListView(data) {
             <div class="result-snippet">${result.snippet}</div>
             <div class="result-score">
                 Score: ${result.score.toFixed(3)} | Rank: ${result.rank}
-                <span class="result-topic">${result.topic}</span>
+                <span class="result-domain">${result.domain}</span>
             </div>
         `;
         
@@ -788,4 +754,17 @@ function toggleView() {
             renderListView(currentData);
         }
     }
+}
+
+function formatLLMResponse(text) {
+    if (!text) return "No AI answer available.";
+
+    return text
+        .replace(/### (.*$)/gim, '<h3>$1</h3>')                 // ### -> <h3>
+        .replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>')     // **bold**
+        .replace(/^- (.*$)/gim, '<li>$1</li>')                  // - bullet points
+        .replace(/\n{2,}/g, '</p><p>')                          // Double newline → paragraph
+        .replace(/\n/g, '<br>')                                 // Single newline
+        .replace(/^/, '<p>')                                    // Wrap start in <p>
+        .concat('</p>');                                        // Wrap end in </p>
 }

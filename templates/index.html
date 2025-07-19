@@ -8,6 +8,7 @@
     <script src="https://d3js.org/d3.v7.min.js"></script>
 </head>
 <body>
+  <!-- TOP: header only -->
   <div id="header" class="centered">
     <h1 id="site-title">BubbleSearch</h1>
     <div class="search-container">
@@ -19,20 +20,32 @@
     </p>
   </div>
 
-  <div id="controls" style="display: none; text-align: center; margin: 20px 0;">
-    <button id="toggleView" class="toggle-btn">Switch to List View</button>
-    <p style="margin-top: 10px; color: #666; font-size: 12px;">
-      💡 <strong>Bubble View:</strong> Overview → Zoom into clusters • Pan by dragging • Mouse wheel zoom • Click bubbles to visit pages
-    </p>
-  </div>
-
-  <div id="results" style="display: none;">
-    <div id="bubbleView">
-      <svg id="bubbleChart"></svg>
-    </div>
+  <!-- MAIN CONTENT AFTER SEARCH -->
+  <div id="main-content" style="display: none;">
     
-    <div id="listView" style="display: none;">
-      <div id="searchResults" class="search-results"></div>
+    <!-- LEFT SIDE: controls and results -->
+    <div id="left-panel" style="flex: 2; margin-right: 20px;">
+      <div id="controls" style="text-align: center; margin-bottom: 20px;">
+        <button id="toggleView" class="toggle-btn">Switch to List View</button>
+        <p style="margin-top: 10px; color: #666; font-size: 12px;">
+          💡 <strong>Bubble View:</strong> Overview → Zoom into clusters • Pan by dragging • Mouse wheel zoom • Click bubbles to visit pages
+        </p>
+      </div>
+
+      <div id="results">
+        <div id="bubbleView">
+          <svg id="bubbleChart"></svg>
+        </div>
+        <div id="listView" style="display: none;">
+          <div id="searchResults" class="search-results"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT SIDE: LLM RESPONSE -->
+    <div id="right-panel" style="flex: 1; border-left: 1px solid #ddd; padding-left: 20px;">
+      <h3>Search asisstant response based on results</h3>
+      <div id="llm-response-text" style="white-space: pre-wrap; font-size: 14px; color: #333;"></div>
     </div>
   </div>
 
