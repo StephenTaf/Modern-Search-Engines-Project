@@ -434,7 +434,8 @@ def store(frontier, frontierDict, domainDelaysFrontier, disallowedURLCache, disa
     # urls together with some information into csv documents
     saveAsCsv("frontier", "id, schedule, delay, url",10)
     saveAsCsv("urlsDB", "url, lastFetch, tueEngScore",100)
-    
+
+# this is used int the main of the crawler to close the crawler    
 def closeCrawlerDB():
     global crawlerDB
     crawlerDB.close()
