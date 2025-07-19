@@ -14,6 +14,7 @@ from openai import OpenAI
 from transformers import AutoTokenizer
 import asyncio
 import duckdb
+from urllib.parse import urlparse
 
 class Database:
     def __init__(self, data_path: str):
@@ -148,13 +149,6 @@ class RerankRequest(BaseModel):
     # top_n: int = config['sliding_window']['default_top_n']
     call_api: Optional[bool] = True  # Whether to call the model for embeddings
 
-class DocumentScore(BaseModel):
-    doc_id: str
-    title: str
-    url: str
-    similarity_score: float
-    original_similarity: float  # Original retrieval similarity score
-
 class WindowScore(BaseModel):
     text: str
     similarity_score: float
@@ -162,11 +156,88 @@ class WindowScore(BaseModel):
     title: str
     window_index: int
 
+class DocumentScore(BaseModel):
+    doc_id: str
+    title: str
+    url: str
+    similarity_score: float
+    original_similarity: float  # Original retrieval similarity score
+    most_relevant_window:WindowScore
+
 class RerankResponse(BaseModel):
     document_scores: List[DocumentScore]
     top_windows: List[WindowScore]
     total_documents: int
     total_windows: int
+
+def extract_domain(url):
+    """Extract domain from URL - basic version"""
+    try:
+        parsed = urlparse(url)
+        return parsed.netloc.lower()
+    except:
+        return "defaultdomain"
+
+def apply_domain_cap(results, max_per_domain=2):
+    """
+        Filter out same domains. Input must be sorted by similatity score!
+    """
+    domain_counts = {}
+    filtered_results = []
+    dropped_results = []
+    
+    for doc in results:
+        domain = extract_domain(doc.url)
+        if domain_counts.get(domain, 0) < max_per_domain:
+            filtered_results.append(doc)
+            domain_counts[domain] = domain_counts.get(domain, 0) + 1
+        else:
+            dropped_results.append(doc)
+    
+    return filtered_results, dropped_results
+
+def hybrid_diversification(results, relevance_threshold=0.8, top_k=100):
+    """
+    use max 1 per domain due to the fact that we don't want to be same domains in medium relevance group
+    """
+    
+    # Separate high-relevance from medium-relevance
+    high_relevance_domains = set([extract_domain(doc.url) for doc in results if doc.similarity_score >= relevance_threshold])
+    medium_relevance_domains = set([extract_domain(doc.url) for doc in results if doc.similarity_score < relevance_threshold])
+    medium_relevance_domains = medium_relevance_domains.difference(high_relevance_domains) # exclude high priority domains from medium priority
+    high_rel = [doc for doc in results if (doc.similarity_score >= relevance_threshold or extract_domain(doc.url) in high_relevance_domains)] # will NOT be sorted
+    # "and" because some medium results were qualified as high due to domain
+    medium_rel = [doc for doc in results if (doc.similarity_score < relevance_threshold and extract_domain(doc.url) in medium_relevance_domains)] # will NOT be sorted
+    
+    high_rel = sorted(high_rel, key=lambda x: x.similarity_score, reverse=True)
+    medium_rel = sorted(medium_rel, key=lambda x: x.similarity_score, reverse=True)
+    # Apply strict diversity to high-relevance results
+    diversified_high, dropped_high = apply_domain_cap(high_rel, max_per_domain=1) # will be sorted
+    
+    # Fill remaining slots with medium-relevance, allowing more per domain
+    remaining_slots = top_k - len(diversified_high) # Other slots will be filled with this
+    diversified_medium, dropped_medium = apply_domain_cap(medium_rel, max_per_domain=1) # will be sorted
+    
+    # Combine and maintain relevance order within diversity constraints
+    final_results = sorted(diversified_high + diversified_medium[:remaining_slots], key=lambda x: x.similarity_score, reverse=True)
+    rest_docs = sorted(dropped_high + dropped_medium, key=lambda x: x.similarity_score, reverse=True)
+    if len(final_results) < top_k:
+        # Note: Here would be better to use recursion hybrid_diversification(rest_docs, top_k=need_to_add), but there are corner cases when it's not convergent
+        # Note: I fill rest with mixed results because it looks to be native
+        need_to_add = top_k - len(final_results)
+        additional = rest_docs[:need_to_add]
+        if additional:
+            # need to update scores in tail to be monotonical
+            # additional is already sorted
+            eps=1e-4
+            last_relevant_score = final_results[-1].similarity_score
+            delta = additional[0].similarity_score - last_relevant_score + eps # > 0
+            for doc in additional:
+                doc.similarity_score = max(0.0, doc.similarity_score - delta)
+            final_results.extend(additional)
+    
+    return sorted(final_results, key=lambda x: x.similarity_score, reverse=True)
+
 
 def tokenize_text(text: str, add_special_tokens: bool = True) -> List[int]:
     """Tokenize text using the HuggingFace tokenizer."""
@@ -411,7 +482,7 @@ async def rerank(request: RerankRequest):
         
         # Calculate similarities and prepare results
         document_scores = []
-        window_scores = []
+        top_windows = {} # doc_id : Window
         doc_max_similarities = {}  # Track max similarity per document
         
         for window in all_windows:
@@ -434,13 +505,14 @@ async def rerank(request: RerankRequest):
                 doc_max_similarities[doc_id] = max(doc_max_similarities[doc_id], boosted_similarity)
             
             # Create window score object
-            window_scores.append(WindowScore(
-                text=window.get('text', 'Unknown'),
-                similarity_score=boosted_similarity,
-                doc_id=str(window['doc_id']),  # Convert to string for Pydantic model
-                title=window.get('title', 'Unknown'),
-                window_index=window['window_id']
-            ))
+            if (not str(window['doc_id']) in top_windows) or (top_windows[str(window['doc_id'])].similarity_score < boosted_similarity):
+                top_windows[str(window['doc_id'])] = WindowScore(
+                    text=window.get('text', 'Unknown'),
+                    similarity_score=boosted_similarity,
+                    doc_id=str(window['doc_id']),  # Convert to string for Pydantic model
+                    title=window.get('title', 'Unknown'),
+                    window_index=window['window_id']
+                )
 
         # Create document scores using max similarity per document
         for idx, doc in enumerate(documents):
@@ -451,21 +523,17 @@ async def rerank(request: RerankRequest):
                 title=doc.get('title', ''),
                 url=doc.get('url', ''),
                 similarity_score=max_similarity,
-                original_similarity=float(request.similarities[idx]) if request.similarities else 0.0
+                original_similarity=float(request.similarities[idx]) if request.similarities else 0.0,
+                most_relevant_window=top_windows[str(doc['doc_id'])]
             ))
         
         # Sort documents by similarity score (descending)
-        document_scores.sort(key=lambda x: x.similarity_score, reverse=True)
-        
-        # Get top N windows
-        window_scores.sort(key=lambda x: x.similarity_score, reverse=True)
-        top_windows = window_scores[:top_n]
-        
+        document_scores.sort(key=lambda x: x.similarity_score, reverse=True)        
+        reranked_docs = hybrid_diversification(document_scores, top_k=top_n)
         logger.info(f"Reranking completed. Top document: {document_scores[0].doc_id} ({document_scores[0].similarity_score:.4f})")
-        
         return RerankResponse(
-            document_scores=document_scores[:top_n],
-            top_windows=top_windows[:top_n],
+            document_scores=reranked_docs[:top_n],
+            top_windows=[doc.most_relevant_window for doc in reranked_docs[:top_n]],
             total_documents=len(documents),
             total_windows=total_windows
         )
