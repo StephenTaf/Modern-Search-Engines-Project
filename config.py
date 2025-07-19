@@ -1,5 +1,5 @@
-EMBEDDING_MODEL = "all-MiniLM-L6-v2" # Default embedding model
-EMBEDDING_DIMENSION = 384  # Dimension of the embeddings
+EMBEDDING_MODEL = "sentence-transformers/sentence-t5-base" #"all-MiniLM-L6-v2" # Default embedding model
+EMBEDDING_DIMENSION = 768 #384  # Dimension of the embeddings
 MIN_SENTENCE_LENGTH = 5  # Minimum length of sentences to consider
 DB_PATH = "crawlerDb.duckdb"  # Path to the DuckDB database
 DB_TABLE = "urlsDB"  # Table name in the DuckDB database

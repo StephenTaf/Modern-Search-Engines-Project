@@ -15,6 +15,8 @@ from transformers import AutoTokenizer
 import asyncio
 import duckdb
 from urllib.parse import urlparse
+from sentence_transformers import SentenceTransformer
+import pandas as pd
 
 class Database:
     def __init__(self, data_path: str):
@@ -31,21 +33,28 @@ class Database:
         # Use GROUP BY url to get distinct URLs, normalizing URLs by removing query parameters
         # This treats URLs as the same if they only differ by query parameters (e.g., ?q=vf)
         query = f"""
-        SELECT CAST(MIN(id) AS TEXT) AS id, 
-               FIRST(title) AS title, 
-               FIRST(url) AS url, 
-               FIRST(text) AS text 
-        FROM urlsDB 
-        WHERE id IN ({placeholders}) 
-        GROUP BY CASE 
-            WHEN INSTR(url, '?') > 0 THEN SUBSTR(url, 1, INSTR(url, '?') - 1)
-            ELSE url 
-        END
-        """
+            WITH url_data AS (
+                SELECT CAST(MIN(id) AS TEXT) AS id, 
+                    FIRST(title) AS title, 
+                    FIRST(url) AS url, 
+                    FIRST(text) AS text 
+                FROM urlsDB 
+                WHERE id IN ({placeholders}) 
+                GROUP BY CASE 
+                    WHEN INSTR(url, '?') > 0 THEN SUBSTR(url, 1, INSTR(url, '?') - 1)
+                    ELSE url 
+                END
+            )
+            
+            SELECT ud.*, co.*, e.*
+            FROM url_data ud
+            JOIN chunks_optimized co ON ud.id = co.doc_id
+            JOIN embeddings e ON co.chunk_id = e.chunk_id
+            """
         
-        results = self.vdb.execute(query, doc_ids).fetchall()
+        results = self.vdb.execute(query, doc_ids).df()
         
-        return [{'doc_id': row[0], 'title': row[1], 'url': row[2], 'text': row[3]} for row in results]
+        return results #[{'doc_id': row[0], 'title': row[1], 'url': row[2], 'text': row[3]} for row in results]
 
 
 
@@ -120,25 +129,8 @@ app = FastAPI(
 
 # Initialize tokenizer from config
 HF_MODEL_NAME = config['huggingface']['model_name']
-logger.info(f"Loading tokenizer: {HF_MODEL_NAME}")
-tokenizer = AutoTokenizer.from_pretrained(HF_MODEL_NAME)
-if tokenizer.pad_token is None:
-    tokenizer.pad_token = tokenizer.eos_token
-
-# Initialize OpenAI client from config
-api_key = config['openai']['api_key']
-# Initialize OpenAI client with optional base_url for alternative providers
-openai_config = {"api_key": api_key}
-if 'base_url' in config['openai']:
-    openai_config['base_url'] = config['openai']['base_url']
-    logger.info(f"Using custom API base URL: {config['openai']['base_url']}")
-
-openai_client = OpenAI(**openai_config)
-logger.info("OpenAI client initialized successfully")
-# Initialize ThreadPoolExecutor globally
-import concurrent.futures
-max_workers = config["performance"]["max_concurrent_files"]
-executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+logger.info(f"Loading model: {HF_MODEL_NAME}")
+embedding_model = SentenceTransformer(HF_MODEL_NAME)
 
 class RerankRequest(BaseModel):
     doc_ids: List[str]  # List of document IDs to rerank
@@ -147,7 +139,6 @@ class RerankRequest(BaseModel):
     # window_size: int = config['sliding_window']['default_window_size']
     # step_size: int = config['sliding_window']['default_step_size']
     # top_n: int = config['sliding_window']['default_top_n']
-    call_api: Optional[bool] = True  # Whether to call the model for embeddings
 
 class WindowScore(BaseModel):
     text: str
@@ -239,11 +230,6 @@ def hybrid_diversification(results, relevance_threshold=0.8, top_k=100):
     return sorted(final_results, key=lambda x: x.similarity_score, reverse=True)
 
 
-def tokenize_text(text: str, add_special_tokens: bool = True) -> List[int]:
-    """Tokenize text using the HuggingFace tokenizer."""
-    tokens = tokenizer.encode(text, add_special_tokens=add_special_tokens)
-    return tokens
-
 def create_sliding_windows(tokens: List[int], window_size: int, step_size: int) -> List[List[int]]:
     if len(tokens) <= window_size:
         return [tokens]
@@ -267,125 +253,6 @@ def create_sliding_windows(tokens: List[int], window_size: int, step_size: int) 
     
     return windows
 
-def decode_tokens(tokens: List[int]) -> str:
-    """Decode tokens back to text."""
-    return tokenizer.decode(tokens, skip_special_tokens=True)
-
-def prepare_window_texts(windows: List[List[int]]) -> List[str]:
-    """Convert token windows back to properly formatted text with special tokens."""
-    window_texts = []
-    for window in windows:
-        # Decode window tokens back to text (without special tokens)
-        window_text = tokenizer.decode(window, skip_special_tokens=True)
-        window_texts.append(window_text)
-    return window_texts
-
-def get_embedding(text: str) -> List[float]:
-    """Get embedding from API for a single text."""
-    try:
-        response = openai_client.embeddings.create(
-            model=config['openai']['embedding_model'],
-            input=text,
-            encoding_format="float"
-        )
-        return response.data[0].embedding
-    except Exception as e:
-        logger.error(f"Error getting embedding: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error getting embedding: {str(e)}")
-
-def get_embeddings_batch_api(texts: List[str]) -> List[List[float]]:
-    """Get embeddings for multiple texts in a single API call."""
-    logger.debug(f"Started thread for {len(texts)} texts")
-    try:
-        response = openai_client.embeddings.create(
-            model=config['openai']['embedding_model'],
-            input=texts,  # Send all texts in one request
-            encoding_format="float"
-        )
-        # Extract embeddings in the same order as input texts
-        embeddings = []
-        for data_item in response.data:
-            embeddings.append(data_item.embedding)
-        return embeddings
-    except Exception as e:
-        logger.error(f"Error getting batch embeddings: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error getting batch embeddings: {str(e)}")
-
-async def get_embeddings_batch(texts: List[str]) -> List[List[float]]:
-    """Get embeddings for multiple texts using batched API calls with RPM control."""
-    # Use batch size from config
-    batch_size = config['openai']['batch_size']
-    
-    logger.info(f"Processing {len(texts)} texts in batches of {batch_size}")
-    
-    # Calculate RPM limits
-    use_rpm_control = config.get('rate_limiting', {}).get('enabled', False)
-    
-    if use_rpm_control:
-        max_rpm = config.get('rate_limiting', {}).get('requests_per_minute', 60)
-        logger.info(f"RPM control enabled: max {max_rpm} requests per minute")
-    
-    # Collect async tasks for parallel execution
-    tasks = []
-    batch_info = []  # Keep track of batch info for logging
-    
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i:i + batch_size]
-        
-        # Apply rate limiting if enabled (one API call per batch)
-        if use_rpm_control and rate_limiter:
-            await rate_limiter.acquire()
-        
-        # Start async task without waiting - this allows parallel execution
-        task = asyncio.to_thread(get_embeddings_batch_api, batch)
-        tasks.append(task)
-        
-        batch_num = i//batch_size + 1
-        total_batches = (len(texts) + batch_size - 1)//batch_size
-        batch_info.append((batch_num, total_batches, len(batch)))
-        
-        # Add a small delay between batch starts to be extra safe with rate limits
-        if use_rpm_control and batch_num < total_batches:
-            await asyncio.sleep(0.1)
-    
-    # Wait for all API calls to complete in parallel
-    logger.debug(f"Waiting for {len(tasks)} parallel API calls to complete...")
-    # NOTE: asyncio.gather() preserves order - results match input task order regardless of completion order
-    all_batch_results = await asyncio.gather(*tasks)
-    
-    # Flatten results and log completion
-    all_embeddings = []
-    for i, (batch_embeddings, (batch_num, total_batches, batch_size_actual)) in enumerate(zip(all_batch_results, batch_info)):
-        all_embeddings.extend(batch_embeddings)
-        logger.debug(f"Completed batch {batch_num}/{total_batches} ({batch_size_actual} texts in 1 API call)")
-    
-    return all_embeddings
-
-async def process_windows_batched(all_windows: List[Dict]) -> None:
-    """
-    Process all windows in batches to get embeddings and add them to the window dictionaries.
-    
-    Args:
-        all_windows: List of window dictionaries, each containing 'doc_id', 'text', 'window_id'
-                    The 'embedding' key will be added to each dictionary.
-    """
-    if not all_windows:
-        return
-    
-    # Extract all window texts
-    window_texts = [window['text'] for window in all_windows]
-    
-    logger.info(f"Getting embeddings for {len(window_texts)} windows using batched API calls")
-    
-    # Get embeddings in batches
-    embeddings = await get_embeddings_batch(window_texts)
-    
-    # Add embeddings back to the window dictionaries
-    for window, embedding in zip(all_windows, embeddings):
-        window['embedding'] = embedding
-    
-    logger.debug(f"Successfully added embeddings to {len(all_windows)} windows")
-
 def calculate_similarity(embedding1: List[float], embedding2: List[float]) -> float:
     """Calculate similarity between two embeddings based on config metric."""
     # Convert to numpy arrays for similarity calculation
@@ -396,6 +263,24 @@ def calculate_similarity(embedding1: List[float], embedding2: List[float]) -> fl
     similarity = cosine_similarity(emb1_array, emb2_array)[0][0]
     return float(similarity)
 
+
+def get_new_similarity(documents, query_embedding, batch_size: int) -> List[float]:
+    """
+    Calculate new similarity scores for documents based on query embedding.
+    Uses batch processing to handle large datasets efficiently.
+    """
+    similarities = []
+    
+    # Process in batches
+    for i in range(0, len(documents), batch_size):
+        batch_docs = documents.iloc[i:i + batch_size]
+        doc_embeddings = np.array([doc[1]['embedding'] for doc in batch_docs.iterrows()])  # Extract embeddings from DataFrame
+        # Calculate cosine similarity for the entire batch
+        batch_similarities = cosine_similarity(query_embedding.reshape(1, -1), doc_embeddings)[0]
+        similarities.extend(batch_similarities)
+    return similarities
+
+
 @app.post("/rerank", response_model=RerankResponse)
 async def rerank(request: RerankRequest):
     """
@@ -403,47 +288,83 @@ async def rerank(request: RerankRequest):
     """
     try:
         logger.info(f"Processing rerank request for doc_ids: {request.doc_ids} with similarities: {request.similarities}")
-        logger.info(f"Query: {request.query[:100]}{'...' if len(request.query) > 100 else ''}")
-        # Используем значения из конфига
-        window_size = config['sliding_window']['default_window_size']
-        step_size = config['sliding_window']['default_step_size']
-        top_n = config['sliding_window']['default_top_n']
-        max_window_per_doc = config['sliding_window']['max_windows_per_document']
-        logger.info(f"Window size: {window_size}, Step size: {step_size}, Top N: {top_n}, Max windows per doc: {max_window_per_doc}")
-
+        logger.info(f"Query: {request.query[:100]}{'...' if len(request.query) > 100 else ''}") 
         # Get documents from database
-        documents = database.get_documents_by_ids(request.doc_ids)
-        
-        if not documents:
+        documents = database.get_documents_by_ids(request.doc_ids) # pandas
+
+        if len(documents) == 0:
             raise HTTPException(status_code=401, detail="No documents found for the provided doc_ids")
-        
+
         logger.info(f"Found {len(documents)} documents in database")
         
         query_text = request.query
-        if not request.call_api:
-            # use default sorting of request.similarities if provided
-            return RerankResponse(
-                document_scores=[
-                    DocumentScore(
-                        doc_id=str(doc['doc_id']),
-                        title=doc['title'],
-                        url=doc['url'],
-                        similarity_score=request.similarities[i] if request.similarities else 0.0,
-                        original_similarity=request.similarities[i] if request.similarities else 0.0
-                    ) for i, doc in enumerate(documents)
-                ],
-                top_windows= [WindowScore(
-                    text=doc['text'][:200],  # Use first 200 chars as snippet
-                    similarity_score=request.similarities[i] if request.similarities else 0.0,
+
+        query_embedding = embedding_model.encode(query_text) # (769,)
+        # get old similarity as provided
+        documents = documents.merge(pd.DataFrame({"doc_id":[int(d_id) for d_id in request.doc_ids], "old_similarity" : request.similarities}), on=['doc_id'])
+        documents["new_similarity"] = get_new_similarity(documents, query_embedding, config['similarity']['batch_size'])
+        # make smoothing
+        documents['new_similarity'] = documents['new_similarity'] * (1-config["similarity"]["smoothing"]) + documents['old_similarity'] * config["similarity"]["smoothing"]
+        documents = documents.reset_index(drop=True)
+        # create list of DocumentScore objects
+
+        idx = documents.groupby('doc_id')['new_similarity'].idxmax() # find most relevant windows in documents
+        reranked_documents = documents.loc[idx, ['id', 'title', 'url', 'text', 'chunk_id', 'doc_id', 'chunk_text', 'new_similarity', 'old_similarity']]
+        # 
+        reranked_documents = reranked_documents.sort_values(by="new_similarity", ascending=False).reset_index(drop=True)
+        # below list is sorted!
+        document_scores = [
+            DocumentScore(
+                doc_id=str(doc['doc_id']),
+                title=doc['title'],
+                url=doc['url'],
+                similarity_score=doc['new_similarity'],
+                original_similarity=doc['old_similarity'],
+                most_relevant_window=WindowScore(
+                    text=doc['text'],
+                    similarity_score=doc['new_similarity'],
                     doc_id=str(doc['doc_id']),
                     title=doc['title'],
-                    window_index=0  # No specific window index since we're not using sliding windows
-                ) for i, doc in enumerate(documents)],
-                total_documents=len(documents),
-                total_windows=0
-            )
+                    window_index=doc['chunk_id']  # Assuming chunk_id is used as window index,
+
+                )
+            ) for i, doc in reranked_documents.iterrows()
+        ]
+        TOP_K=100
+        reranked_docs = hybrid_diversification(document_scores, top_k=TOP_K)  # Apply hybrid diversification to the top 100 documents
+        logger.info(f"Reranking completed. Top document: {document_scores[0].doc_id} ({document_scores[0].similarity_score:.4f})")
+        return RerankResponse(
+            document_scores=reranked_docs,
+            top_windows=[doc.most_relevant_window for doc in reranked_docs[:TOP_K]],
+            total_documents=len(documents),
+            total_windows=TOP_K
+        )
         
-        # Apply rate limiting for query embedding if enabled
+        return
+        
+        #     # use default sorting of request.similarities if provided
+        #     return RerankResponse(
+        #         document_scores=[
+        #             DocumentScore(
+        #                 doc_id=str(doc['doc_id']),
+        #                 title=doc['title'],
+        #                 url=doc['url'],
+        #                 similarity_score=request.similarities[i] if request.similarities else 0.0,
+        #                 original_similarity=request.similarities[i] if request.similarities else 0.0
+        #             ) for i, doc in enumerate(documents)
+        #         ],
+        #         top_windows= [WindowScore(
+        #             text=doc['text'][:200],  # Use first 200 chars as snippet
+        #             similarity_score=request.similarities[i] if request.similarities else 0.0,
+        #             doc_id=str(doc['doc_id']),
+        #             title=doc['title'],
+        #             window_index=0  # No specific window index since we're not using sliding windows
+        #         ) for i, doc in enumerate(documents)],
+        #         total_documents=len(documents),
+        #         total_windows=0
+        #     )
+        
+        # # Apply rate limiting for query embedding if enabled
         if config.get('rate_limiting', {}).get('enabled', False) and rate_limiter:
             await rate_limiter.acquire()
         
@@ -676,10 +597,10 @@ async def root():
             "/docs": "GET - API documentation"
         }
     }
-@app.on_event("startup")
-async def configure_executor():
-    loop = asyncio.get_running_loop()
-    loop.set_default_executor(executor)
+# @app.on_event("startup")
+# async def configure_executor():
+#     loop = asyncio.get_running_loop()
+#     loop.set_default_executor(executor)
 
 if __name__ == "__main__":
     import uvicorn
