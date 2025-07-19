@@ -1,0 +1,91 @@
+# IDE and Editor files
+.vscode/
+**/.vscode/
+.idea/
+**/.idea/
+
+# Virtual environments
+.venv/
+**/.venv/
+venv/
+**/venv/
+env/
+**/env/
+
+# Python cache and compiled files
+__pycache__/
+**/__pycache__/
+*.pyc
+**/*.pyc
+*.pyo
+**/*.pyo
+*.pyd
+**/*.pyd
+
+# Database files
+*.db
+**/*.db
+*.duckdb
+**/*.duckdb
+*.sqlite
+**/*.sqlite
+*.sqlite3
+**/*.sqlite3
+*.wal
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+# Index and cache directories
+index/
+**/index/
+cache/
+**/cache/
+
+# macOS system files
+.DS_Store
+**/.DS_Store
+.AppleDouble
+**/.AppleDouble
+.LSOverride
+**/.LSOverride
+
+# Windows system files
+Thumbs.db
+**/Thumbs.db
+Desktop.ini
+**/Desktop.ini
+
+# Log files
+*.log
+**/*.log
+nohup.out
+**/nohup.out
+
+# Temporary files
+*.tmp
+**/*.tmp
+*.temp
+**/*.temp
+*~
+**/*~
+
+# Build and distribution files
+build/
+**/build/
+dist/
+**/dist/
+*.egg-info/
+**/*.egg-info/
+
+# Environment variables
+.env
+**/.env
+.env.local
+**/.env.local
+
+*.par
+*.parquet
+*.csv
+.DS_Store
