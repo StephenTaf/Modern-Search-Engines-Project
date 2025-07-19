@@ -339,126 +339,6 @@ async def rerank(request: RerankRequest):
             total_documents=len(documents),
             total_windows=TOP_K
         )
-        
-        return
-        
-        #     # use default sorting of request.similarities if provided
-        #     return RerankResponse(
-        #         document_scores=[
-        #             DocumentScore(
-        #                 doc_id=str(doc['doc_id']),
-        #                 title=doc['title'],
-        #                 url=doc['url'],
-        #                 similarity_score=request.similarities[i] if request.similarities else 0.0,
-        #                 original_similarity=request.similarities[i] if request.similarities else 0.0
-        #             ) for i, doc in enumerate(documents)
-        #         ],
-        #         top_windows= [WindowScore(
-        #             text=doc['text'][:200],  # Use first 200 chars as snippet
-        #             similarity_score=request.similarities[i] if request.similarities else 0.0,
-        #             doc_id=str(doc['doc_id']),
-        #             title=doc['title'],
-        #             window_index=0  # No specific window index since we're not using sliding windows
-        #         ) for i, doc in enumerate(documents)],
-        #         total_documents=len(documents),
-        #         total_windows=0
-        #     )
-        
-        # # Apply rate limiting for query embedding if enabled
-        if config.get('rate_limiting', {}).get('enabled', False) and rate_limiter:
-            await rate_limiter.acquire()
-        
-        # Get query embedding
-        query_embedding = await asyncio.to_thread(get_embedding, query_text)
-        
-        # Process documents and collect all windows
-        all_windows = []  # will keep (doc_id, window_text, window_id)
-        total_windows = 0
-        _tik = time.time()
-        for idx, doc in enumerate(documents):
-            logger.debug(f"Processing document: {doc['doc_id']}")    
-            # Tokenize document without special tokens initially
-            doc_tokens = tokenize_text(f"{doc['title']} {doc['text']}", add_special_tokens=False)
-            # Create sliding windows
-            windows = create_sliding_windows(doc_tokens, window_size, step_size)
-            windows = windows[:max_window_per_doc]  # Limit to max windows per document
-            total_windows += len(windows)
-            # Convert windows back to text
-            window_texts = prepare_window_texts(windows)
-            # Add windows with metadata
-            for i, window_text in enumerate(window_texts):
-                all_windows.append({
-                    'doc_id': doc['doc_id'], 
-                    'text': window_text, 
-                    'window_id': i,
-                    'title': doc['title'],
-                    'url': doc['url'],
-                    'original_similarity': float(request.similarities[idx]) if request.similarities else 0.0
-                })
-
-        logger.debug(f"Created {len(all_windows)} windows in {time.time() - _tik:.2f} seconds")
-
-        # Process all windows in batches to get embeddings
-        await process_windows_batched(all_windows)
-        
-        # Calculate similarities and prepare results
-        document_scores = []
-        top_windows = {} # doc_id : Window
-        doc_max_similarities = {}  # Track max similarity per document
-        
-        for window in all_windows:
-            # Calculate similarity between query and window
-            similarity = calculate_similarity(query_embedding, window['embedding'])
-            
-            # Track max similarity for each document with early window boost
-            doc_id = str(window['doc_id'])
-            window_index = window['window_id']
-            
-            # Apply position-based boost: earlier windows get higher weight
-            # First window (title area) gets full boost, subsequent windows get progressively less
-            decay_factor = config['sliding_window']['position_boost_decay']
-            position_boost = 1.0 / (1.0 + window_index * decay_factor)
-            boosted_similarity = similarity * position_boost
-            
-            if doc_id not in doc_max_similarities:
-                doc_max_similarities[doc_id] = boosted_similarity
-            else:
-                doc_max_similarities[doc_id] = max(doc_max_similarities[doc_id], boosted_similarity)
-            
-            # Create window score object
-            if (not str(window['doc_id']) in top_windows) or (top_windows[str(window['doc_id'])].similarity_score < boosted_similarity):
-                top_windows[str(window['doc_id'])] = WindowScore(
-                    text=window.get('text', 'Unknown'),
-                    similarity_score=boosted_similarity,
-                    doc_id=str(window['doc_id']),  # Convert to string for Pydantic model
-                    title=window.get('title', 'Unknown'),
-                    window_index=window['window_id']
-                )
-
-        # Create document scores using max similarity per document
-        for idx, doc in enumerate(documents):
-    
-            max_similarity = doc_max_similarities[str(doc['doc_id'])]  # Use string doc_id for lookup
-            document_scores.append(DocumentScore(
-                doc_id=str(doc['doc_id']),  # Convert to string for Pydantic model
-                title=doc.get('title', ''),
-                url=doc.get('url', ''),
-                similarity_score=max_similarity,
-                original_similarity=float(request.similarities[idx]) if request.similarities else 0.0,
-                most_relevant_window=top_windows[str(doc['doc_id'])]
-            ))
-        
-        # Sort documents by similarity score (descending)
-        document_scores.sort(key=lambda x: x.similarity_score, reverse=True)        
-        reranked_docs = hybrid_diversification(document_scores, top_k=top_n)
-        logger.info(f"Reranking completed. Top document: {document_scores[0].doc_id} ({document_scores[0].similarity_score:.4f})")
-        return RerankResponse(
-            document_scores=reranked_docs[:top_n],
-            top_windows=[doc.most_relevant_window for doc in reranked_docs[:top_n]],
-            total_documents=len(documents),
-            total_windows=total_windows
-        )
-        
     except HTTPException:
         raise
     except Exception as e:
@@ -597,10 +477,6 @@ async def root():
             "/docs": "GET - API documentation"
         }
     }
-# @app.on_event("startup")
-# async def configure_executor():
-#     loop = asyncio.get_running_loop()
-#     loop.set_default_executor(executor)
 
 if __name__ == "__main__":
     import uvicorn
