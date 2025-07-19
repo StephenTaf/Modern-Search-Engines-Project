@@ -8,7 +8,7 @@
     <script src="https://d3js.org/d3.v7.min.js"></script>
 </head>
 <body>
-  <!-- TOP: header only -->
+  <!-- TOP: header only (contains the Search Engine Name and the query input field) -->
   <div id="header" class="centered">
     <h1 id="site-title">BubbleSearch</h1>
     <div class="search-container">
@@ -20,10 +20,10 @@
     </p>
   </div>
 
-  <!-- MAIN CONTENT AFTER SEARCH -->
+  <!-- Things to be displayed after the first search (basically used to implement a landing page) -->
   <div id="main-content" style="display: none;">
     
-    <!-- LEFT SIDE: controls and results -->
+    <!-- LEFT SIDE: Results, either displayed as the bubble view or the list view -->
     <div id="left-panel" style="flex: 2; margin-right: 20px;">
       <div id="controls" style="text-align: center; margin-bottom: 20px;">
         <button id="toggleView" class="toggle-btn">Switch to List View</button>
@@ -42,7 +42,7 @@
       </div>
     </div>
 
-    <!-- RIGHT SIDE: LLM RESPONSE -->
+    <!-- RIGHT SIDE: LLM response -->
     <div id="right-panel" style="flex: 1; border-left: 1px solid #ddd; padding-left: 20px;">
       <h3>Search asisstant response based on results</h3>
       <div id="llm-response-text" style="white-space: pre-wrap; font-size: 14px; color: #333;"></div>

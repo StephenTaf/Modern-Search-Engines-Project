@@ -5,6 +5,57 @@ body {
   padding: 20px;
 }
 
+
+/* Scalable Vector Graphics styling */
+svg {
+  border: 3px solid #007acc;
+  margin-top: 20px;
+  background: #fafafa;
+  border-radius: 12px;
+  width: 80vw;
+  height: 80vh;
+  max-width: 1200px;
+  max-height: 800px;
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  box-shadow: 0 4px 20px rgba(0, 122, 204, 0.15);
+  position: relative;
+}
+
+svg::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  right: -6px;
+  bottom: -6px;
+  background: linear-gradient(45deg, #007acc, #28a745);
+  border-radius: 15px;
+  z-index: -1;
+}
+
+/*  */
+.cluster text {
+  pointer-events: none; /* Prevent text from interfering with mouse events */
+  user-select: none;
+}
+
+.doc-node-group {
+  cursor: pointer;
+}
+
+.doc-node {
+  transition: all 0.15s ease;
+}
+
+.doc-node-text {
+  pointer-events: none;
+  user-select: none;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* tooltip styling (preview that is shown when you hover over a document) */
 .tooltip {
   position: absolute;
   visibility: hidden;
@@ -42,53 +93,7 @@ body {
   text-decoration: underline;
 }
 
-svg {
-  border: 3px solid #007acc;
-  margin-top: 20px;
-  background: #fafafa;
-  border-radius: 12px;
-  width: 80vw;
-  height: 80vh;
-  max-width: 1200px;
-  max-height: 800px;
-  display: block;
-  margin-left: auto;
-  margin-right: auto;
-  box-shadow: 0 4px 20px rgba(0, 122, 204, 0.15);
-  position: relative;
-}
-
-svg::before {
-  content: '';
-  position: absolute;
-  top: -6px;
-  left: -6px;
-  right: -6px;
-  bottom: -6px;
-  background: linear-gradient(45deg, #007acc, #28a745);
-  border-radius: 15px;
-  z-index: -1;
-}
-
-.cluster text {
-  pointer-events: none; /* Prevent text from interfering with mouse events */
-  user-select: none;
-}
-
-.doc-node-group {
-  cursor: pointer;
-}
-
-.doc-node {
-  transition: all 0.15s ease;
-}
-
-.doc-node-text {
-  pointer-events: none;
-  user-select: none;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-}
-
+/* zoom styling */
 .zoom-controls {
   position: fixed;
   z-index: 1000;
@@ -181,6 +186,7 @@ svg::before {
   margin-top: 5px;
 }
 
+/* Header styling (Header contains the Name of the Search Engine and the query input field) */
 #header {
   display: flex;
   flex-direction: column;
@@ -212,6 +218,7 @@ svg::before {
   outline: none;
   box-shadow: 0 0 5px rgba(0, 122, 204, 0.3);
 }
+
 
 .doc-label {
   pointer-events: none;
@@ -287,14 +294,6 @@ svg::before {
 
 #main-content {
   gap: 20px;
-}
-
-#llm-response-text {
-  background: #f9f9f9;
-  padding: 10px;
-  border-radius: 8px;
-  max-height: 800px;
-  overflow-y: auto;
 }
 
 #llmResponse {
