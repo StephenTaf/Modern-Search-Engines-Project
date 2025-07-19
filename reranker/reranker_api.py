@@ -13,82 +13,41 @@ from pydantic import BaseModel
 from openai import OpenAI
 from transformers import AutoTokenizer
 import asyncio
+import duckdb
+from urllib.parse import urlparse
 
-# Database class for document indexing
 class Database:
     def __init__(self, data_path: str):
-        """Initialize database by loading JSON file with document records."""
+        """Initialize database by connecting to duckdb ."""
+        self.vdb = duckdb.connect(data_path, read_only=True)
         self.data_path = data_path
-        self.documents = []
-        self.doc_index = {}  # doc_id -> list of record indices
-        self.load_data()
-    
-    def load_data(self):
-        """Load documents from JSON file and build index."""
-        try:
-            with open(self.data_path, 'r', encoding='utf-8') as f:
-                self.documents = json.load(f)
-            
-            if not isinstance(self.documents, list):
-                raise ValueError("JSON file must contain a list of document records")
-            
-            # Build index: doc_id -> list of indices
-            self.doc_index = {}
-            for i, doc in enumerate(self.documents):
-                if not isinstance(doc, dict):
-                    raise ValueError(f"Document at index {i} must be a dictionary")
-                
-                required_fields = ['doc_id', 'title', 'url', 'text', 'similarity']
-                missing_fields = [field for field in required_fields if field not in doc]
-                if missing_fields:
-                    raise ValueError(f"Document at index {i} missing required fields: {missing_fields}")
-                
-                doc_id = str(doc['doc_id'])
-                if doc_id not in self.doc_index:
-                    self.doc_index[doc_id] = []
-                self.doc_index[doc_id].append(i)
-            
-            logger.info(f"Loaded {len(self.documents)} documents with {len(self.doc_index)} unique doc_ids from {self.data_path}")
-            
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Database file not found: {self.data_path}")
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON in database file: {e}")
-        except Exception as e:
-            raise ValueError(f"Error loading database: {e}")
     
     def get_documents_by_ids(self, doc_ids: Union[str, List[str]]) -> List[Dict]:
         """Get all documents matching the given doc_id(s)."""
         if isinstance(doc_ids, str):
             doc_ids = [doc_ids]
         
-        result = []
-        missing_ids = []
+        placeholders = ', '.join(['?'] * len(doc_ids))
+        # Use GROUP BY url to get distinct URLs, normalizing URLs by removing query parameters
+        # This treats URLs as the same if they only differ by query parameters (e.g., ?q=vf)
+        query = f"""
+        SELECT CAST(MIN(id) AS TEXT) AS id, 
+               FIRST(title) AS title, 
+               FIRST(url) AS url, 
+               FIRST(text) AS text 
+        FROM urlsDB 
+        WHERE id IN ({placeholders}) 
+        GROUP BY CASE 
+            WHEN INSTR(url, '?') > 0 THEN SUBSTR(url, 1, INSTR(url, '?') - 1)
+            ELSE url 
+        END
+        """
         
-        for doc_id in doc_ids:
-            if doc_id in self.doc_index:
-                # Get all documents with this doc_id
-                for index in self.doc_index[doc_id]:
-                    result.append(self.documents[index])
-            else:
-                missing_ids.append(doc_id)
+        results = self.vdb.execute(query, doc_ids).fetchall()
         
-        if missing_ids:
-            logger.warning(f"Documents not found for doc_ids: {missing_ids}")
-        
-        return result
-    
-    def get_all_doc_ids(self) -> List[str]:
-        """Get list of all available doc_ids."""
-        return list(self.doc_index.keys())
-    
-    def get_document_count(self) -> int:
-        """Get total number of documents."""
-        return len(self.documents)
-    
-    def get_unique_doc_count(self) -> int:
-        """Get number of unique doc_ids."""
-        return len(self.doc_index)
+        return [{'doc_id': row[0], 'title': row[1], 'url': row[2], 'text': row[3]} for row in results]
+
+
 
 # Global rate limiter state
 class RateLimiter:
@@ -121,7 +80,7 @@ class RateLimiter:
             self.request_times.append(current_time)
 
 # Load configuration
-def load_config(config_path: str = "config.yaml") -> dict:
+def load_config(config_path: str = "reranker/config.yaml") -> dict:
     """Load configuration from YAML file."""
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
@@ -176,20 +135,19 @@ if 'base_url' in config['openai']:
 
 openai_client = OpenAI(**openai_config)
 logger.info("OpenAI client initialized successfully")
+# Initialize ThreadPoolExecutor globally
+import concurrent.futures
+max_workers = config["performance"]["max_concurrent_files"]
+executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
 
 class RerankRequest(BaseModel):
     doc_ids: List[str]  # List of document IDs to rerank
+    similarities: Optional[List[float]] = None  # Optional list of similarity scores for each document
     query: str
-    window_size: int = config['sliding_window']['default_window_size']
-    step_size: int = config['sliding_window']['default_step_size']
-    top_n: int = config['sliding_window']['default_top_n']
-
-class DocumentScore(BaseModel):
-    doc_id: str
-    title: str
-    url: str
-    similarity_score: float
-    original_similarity: float  # Original retrieval similarity score
+    # window_size: int = config['sliding_window']['default_window_size']
+    # step_size: int = config['sliding_window']['default_step_size']
+    # top_n: int = config['sliding_window']['default_top_n']
+    call_api: Optional[bool] = True  # Whether to call the model for embeddings
 
 class WindowScore(BaseModel):
     text: str
@@ -198,11 +156,88 @@ class WindowScore(BaseModel):
     title: str
     window_index: int
 
+class DocumentScore(BaseModel):
+    doc_id: str
+    title: str
+    url: str
+    similarity_score: float
+    original_similarity: float  # Original retrieval similarity score
+    most_relevant_window:WindowScore
+
 class RerankResponse(BaseModel):
     document_scores: List[DocumentScore]
     top_windows: List[WindowScore]
     total_documents: int
     total_windows: int
+
+def extract_domain(url):
+    """Extract domain from URL - basic version"""
+    try:
+        parsed = urlparse(url)
+        return parsed.netloc.lower()
+    except:
+        return "defaultdomain"
+
+def apply_domain_cap(results, max_per_domain=2):
+    """
+        Filter out same domains. Input must be sorted by similatity score!
+    """
+    domain_counts = {}
+    filtered_results = []
+    dropped_results = []
+    
+    for doc in results:
+        domain = extract_domain(doc.url)
+        if domain_counts.get(domain, 0) < max_per_domain:
+            filtered_results.append(doc)
+            domain_counts[domain] = domain_counts.get(domain, 0) + 1
+        else:
+            dropped_results.append(doc)
+    
+    return filtered_results, dropped_results
+
+def hybrid_diversification(results, relevance_threshold=0.8, top_k=100):
+    """
+    use max 1 per domain due to the fact that we don't want to be same domains in medium relevance group
+    """
+    
+    # Separate high-relevance from medium-relevance
+    high_relevance_domains = set([extract_domain(doc.url) for doc in results if doc.similarity_score >= relevance_threshold])
+    medium_relevance_domains = set([extract_domain(doc.url) for doc in results if doc.similarity_score < relevance_threshold])
+    medium_relevance_domains = medium_relevance_domains.difference(high_relevance_domains) # exclude high priority domains from medium priority
+    high_rel = [doc for doc in results if (doc.similarity_score >= relevance_threshold or extract_domain(doc.url) in high_relevance_domains)] # will NOT be sorted
+    # "and" because some medium results were qualified as high due to domain
+    medium_rel = [doc for doc in results if (doc.similarity_score < relevance_threshold and extract_domain(doc.url) in medium_relevance_domains)] # will NOT be sorted
+    
+    high_rel = sorted(high_rel, key=lambda x: x.similarity_score, reverse=True)
+    medium_rel = sorted(medium_rel, key=lambda x: x.similarity_score, reverse=True)
+    # Apply strict diversity to high-relevance results
+    diversified_high, dropped_high = apply_domain_cap(high_rel, max_per_domain=1) # will be sorted
+    
+    # Fill remaining slots with medium-relevance, allowing more per domain
+    remaining_slots = top_k - len(diversified_high) # Other slots will be filled with this
+    diversified_medium, dropped_medium = apply_domain_cap(medium_rel, max_per_domain=1) # will be sorted
+    
+    # Combine and maintain relevance order within diversity constraints
+    final_results = sorted(diversified_high + diversified_medium[:remaining_slots], key=lambda x: x.similarity_score, reverse=True)
+    rest_docs = sorted(dropped_high + dropped_medium, key=lambda x: x.similarity_score, reverse=True)
+    if len(final_results) < top_k:
+        # Note: Here would be better to use recursion hybrid_diversification(rest_docs, top_k=need_to_add), but there are corner cases when it's not convergent
+        # Note: I fill rest with mixed results because it looks to be native
+        need_to_add = top_k - len(final_results)
+        additional = rest_docs[:need_to_add]
+        if additional:
+            # need to update scores in tail to be monotonical
+            # additional is already sorted
+            eps=1e-4
+            last_relevant_score = final_results[-1].similarity_score
+            delta = additional[0].similarity_score - last_relevant_score + eps # > 0
+            for doc in additional:
+                doc.similarity_score = max(0.0, doc.similarity_score - delta)
+            final_results.extend(additional)
+    
+    return sorted(final_results, key=lambda x: x.similarity_score, reverse=True)
+
 
 def tokenize_text(text: str, add_special_tokens: bool = True) -> List[int]:
     """Tokenize text using the HuggingFace tokenizer."""
@@ -250,7 +285,8 @@ def get_embedding(text: str) -> List[float]:
     try:
         response = openai_client.embeddings.create(
             model=config['openai']['embedding_model'],
-            input=text
+            input=text,
+            encoding_format="float"
         )
         return response.data[0].embedding
     except Exception as e:
@@ -259,10 +295,12 @@ def get_embedding(text: str) -> List[float]:
 
 def get_embeddings_batch_api(texts: List[str]) -> List[List[float]]:
     """Get embeddings for multiple texts in a single API call."""
+    logger.debug(f"Started thread for {len(texts)} texts")
     try:
         response = openai_client.embeddings.create(
             model=config['openai']['embedding_model'],
-            input=texts  # Send all texts in one request
+            input=texts,  # Send all texts in one request
+            encoding_format="float"
         )
         # Extract embeddings in the same order as input texts
         embeddings = []
@@ -364,10 +402,15 @@ async def rerank(request: RerankRequest):
     Rerank documents based on similarity to query using sliding window approach.
     """
     try:
-        logger.info(f"Processing rerank request for doc_ids: {request.doc_ids}")
+        logger.info(f"Processing rerank request for doc_ids: {request.doc_ids} with similarities: {request.similarities}")
         logger.info(f"Query: {request.query[:100]}{'...' if len(request.query) > 100 else ''}")
-        logger.info(f"Window size: {request.window_size}, Step size: {request.step_size}, Top N: {request.top_n}")
-        
+        # Используем значения из конфига
+        window_size = config['sliding_window']['default_window_size']
+        step_size = config['sliding_window']['default_step_size']
+        top_n = config['sliding_window']['default_top_n']
+        max_window_per_doc = config['sliding_window']['max_windows_per_document']
+        logger.info(f"Window size: {window_size}, Step size: {step_size}, Top N: {top_n}, Max windows per doc: {max_window_per_doc}")
+
         # Get documents from database
         documents = database.get_documents_by_ids(request.doc_ids)
         
@@ -377,6 +420,28 @@ async def rerank(request: RerankRequest):
         logger.info(f"Found {len(documents)} documents in database")
         
         query_text = request.query
+        if not request.call_api:
+            # use default sorting of request.similarities if provided
+            return RerankResponse(
+                document_scores=[
+                    DocumentScore(
+                        doc_id=str(doc['doc_id']),
+                        title=doc['title'],
+                        url=doc['url'],
+                        similarity_score=request.similarities[i] if request.similarities else 0.0,
+                        original_similarity=request.similarities[i] if request.similarities else 0.0
+                    ) for i, doc in enumerate(documents)
+                ],
+                top_windows= [WindowScore(
+                    text=doc['text'][:200],  # Use first 200 chars as snippet
+                    similarity_score=request.similarities[i] if request.similarities else 0.0,
+                    doc_id=str(doc['doc_id']),
+                    title=doc['title'],
+                    window_index=0  # No specific window index since we're not using sliding windows
+                ) for i, doc in enumerate(documents)],
+                total_documents=len(documents),
+                total_windows=0
+            )
         
         # Apply rate limiting for query embedding if enabled
         if config.get('rate_limiting', {}).get('enabled', False) and rate_limiter:
@@ -388,13 +453,14 @@ async def rerank(request: RerankRequest):
         # Process documents and collect all windows
         all_windows = []  # will keep (doc_id, window_text, window_id)
         total_windows = 0
-        
-        for doc in documents:
-            logger.debug(f"Processing document: {doc['doc_id']}")
+        _tik = time.time()
+        for idx, doc in enumerate(documents):
+            logger.debug(f"Processing document: {doc['doc_id']}")    
             # Tokenize document without special tokens initially
-            doc_tokens = tokenize_text(doc['text'], add_special_tokens=False)
+            doc_tokens = tokenize_text(f"{doc['title']} {doc['text']}", add_special_tokens=False)
             # Create sliding windows
-            windows = create_sliding_windows(doc_tokens, request.window_size, request.step_size)
+            windows = create_sliding_windows(doc_tokens, window_size, step_size)
+            windows = windows[:max_window_per_doc]  # Limit to max windows per document
             total_windows += len(windows)
             # Convert windows back to text
             window_texts = prepare_window_texts(windows)
@@ -406,62 +472,68 @@ async def rerank(request: RerankRequest):
                     'window_id': i,
                     'title': doc['title'],
                     'url': doc['url'],
-                    'original_similarity': doc['similarity']
+                    'original_similarity': float(request.similarities[idx]) if request.similarities else 0.0
                 })
-        
-        logger.debug(f"Created {len(all_windows)} windows")
-        
+
+        logger.debug(f"Created {len(all_windows)} windows in {time.time() - _tik:.2f} seconds")
+
         # Process all windows in batches to get embeddings
         await process_windows_batched(all_windows)
         
         # Calculate similarities and prepare results
         document_scores = []
-        window_scores = []
+        top_windows = {} # doc_id : Window
         doc_max_similarities = {}  # Track max similarity per document
         
         for window in all_windows:
             # Calculate similarity between query and window
             similarity = calculate_similarity(query_embedding, window['embedding'])
             
-            # Track max similarity for each document (use string doc_id for consistency)
+            # Track max similarity for each document with early window boost
             doc_id = str(window['doc_id'])
+            window_index = window['window_id']
+            
+            # Apply position-based boost: earlier windows get higher weight
+            # First window (title area) gets full boost, subsequent windows get progressively less
+            decay_factor = config['sliding_window']['position_boost_decay']
+            position_boost = 1.0 / (1.0 + window_index * decay_factor)
+            boosted_similarity = similarity * position_boost
+            
             if doc_id not in doc_max_similarities:
-                doc_max_similarities[doc_id] = similarity
+                doc_max_similarities[doc_id] = boosted_similarity
             else:
-                doc_max_similarities[doc_id] = max(doc_max_similarities[doc_id], similarity)
+                doc_max_similarities[doc_id] = max(doc_max_similarities[doc_id], boosted_similarity)
             
             # Create window score object
-            window_scores.append(WindowScore(
-                text=window['text'],
-                similarity_score=similarity,
-                doc_id=str(window['doc_id']),  # Convert to string for Pydantic model
-                title=window['title'],
-                window_index=window['window_id']
-            ))
-        
+            if (not str(window['doc_id']) in top_windows) or (top_windows[str(window['doc_id'])].similarity_score < boosted_similarity):
+                top_windows[str(window['doc_id'])] = WindowScore(
+                    text=window.get('text', 'Unknown'),
+                    similarity_score=boosted_similarity,
+                    doc_id=str(window['doc_id']),  # Convert to string for Pydantic model
+                    title=window.get('title', 'Unknown'),
+                    window_index=window['window_id']
+                )
+
         # Create document scores using max similarity per document
-        for doc in documents:
+        for idx, doc in enumerate(documents):
+    
             max_similarity = doc_max_similarities[str(doc['doc_id'])]  # Use string doc_id for lookup
             document_scores.append(DocumentScore(
                 doc_id=str(doc['doc_id']),  # Convert to string for Pydantic model
-                title=doc['title'],
-                url=doc['url'],
+                title=doc.get('title', ''),
+                url=doc.get('url', ''),
                 similarity_score=max_similarity,
-                original_similarity=doc['similarity']
+                original_similarity=float(request.similarities[idx]) if request.similarities else 0.0,
+                most_relevant_window=top_windows[str(doc['doc_id'])]
             ))
         
         # Sort documents by similarity score (descending)
-        document_scores.sort(key=lambda x: x.similarity_score, reverse=True)
-        
-        # Get top N windows
-        window_scores.sort(key=lambda x: x.similarity_score, reverse=True)
-        top_windows = window_scores[:request.top_n]
-        
+        document_scores.sort(key=lambda x: x.similarity_score, reverse=True)        
+        reranked_docs = hybrid_diversification(document_scores, top_k=top_n)
         logger.info(f"Reranking completed. Top document: {document_scores[0].doc_id} ({document_scores[0].similarity_score:.4f})")
-        
         return RerankResponse(
-            document_scores=document_scores,
-            top_windows=top_windows,
+            document_scores=reranked_docs[:top_n],
+            top_windows=[doc.most_relevant_window for doc in reranked_docs[:top_n]],
             total_documents=len(documents),
             total_windows=total_windows
         )
@@ -604,6 +676,10 @@ async def root():
             "/docs": "GET - API documentation"
         }
     }
+@app.on_event("startup")
+async def configure_executor():
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(executor)
 
 if __name__ == "__main__":
     import uvicorn
