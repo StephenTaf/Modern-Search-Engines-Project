@@ -16,8 +16,6 @@ pip install -r requirements.txt
 python3 -m crawler.main --help
 ```
 
-**For detailed installation instructions, platform-specific notes, and troubleshooting, see [INSTALL.md](../INSTALL.md).**
-
 ## Features
 
 - **Multiprocessing Support**: Parallel crawling with configurable workers
