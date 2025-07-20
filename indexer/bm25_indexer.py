@@ -505,12 +505,12 @@ class BM25:
         for doc_id, score in top_docs:
             if doc_id in doc_details_dict:
                 title, text = doc_details_dict[doc_id]
-                text_snippet = (text or '')[:200]
+                text_snippet = f'{title or 'N/A'}: {text[:200]}'  # Get first 200 chars of text
                 if len(text or '') > 200:
                     text_snippet += '...'
                 
                 final_results.append({"doc_id": doc_id, "score": score, "text_snippet": text_snippet})
-        
+
         return final_results
     
     def get_term_stats(self, term: str) -> Optional[Dict]:

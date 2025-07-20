@@ -41,7 +41,6 @@ class Indexer:
             logging.info("Force reindexing enabled. Dropping existing chunks and embeddings.")
             self.vdb.execute("DELETE FROM chunks_optimized")
             self.vdb.execute("DELETE FROM embeddings")
-            self.vdb.execute("DROP INDEX IF EXISTS ip_idx;")
             self.vdb.execute("DROP INDEX IF EXISTS idx_chunks_opt_doc_id;")
             self.vdb.execute("VACUUM")  # Compact the database
             # Get all document IDs for reindexing
@@ -143,9 +142,7 @@ class Indexer:
         
         logging.info(f"Processed {chunk_id - initial_chunk_id} new chunks from {doc_count} documents")
 
-        _tik = time.time()
-        self.embedder.create_index()  # Create vector index for embeddings
-        logging.info(f'Vector index created in {time.time() - _tik:.2f} seconds')
+
                 
         logging.info("Indexing completed!")
     

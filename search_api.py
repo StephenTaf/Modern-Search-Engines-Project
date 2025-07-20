@@ -1,6 +1,5 @@
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-from retriever import Retriever
 from indexer.bm25_indexer import BM25
 from indexer.embedder import TextEmbedder
 import config as cfg
