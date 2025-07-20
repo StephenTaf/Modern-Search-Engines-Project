@@ -5,9 +5,8 @@ from dateutil.parser import parse
 from urllib.parse import urljoin, urlparse
 from UTEMA import UTEMA
 from csvToListOfStings import csvToStringList
+import frontierManagement
 import helpers
-import main
-from frontierManagement import moveAndDel
 
 
 ##############################################
@@ -38,36 +37,36 @@ from frontierManagement import moveAndDel
 responseHttpErrorTracker = {}
 
 
-# multiplies the delay- time currently stored in main.frontierDict[url]["delay"] by 2, bounded by 3600 s (1 hour)
+# multiplies the delay- time currently stored in frontierManagement.frontierDict[url]["delay"] by 2, bounded by 3600 s (1 hour)
 # input:
 #       - url: an url
-#       - info: main.frontierDict[url]
+#       - info: frontierManagement.frontierDict[url]
 def exponentialDelay(url, info):
     '''increases the crawl- delay associated with that url exponentially'''
     domain = helpers.getDomain(url)
     
     if domain:
-        # main.frontierDict[url] = info
+        # frontierManagement.frontierDict[url] = info
         
-        delay =main.frontierDict[url]["delay"] 
+        delay =frontierManagement.frontierDict[url]["delay"] 
         if delay > 3600:
             delay = 3600
         else:
             delay = random.uniform(delay*2/1.4, delay*2)
             
-        main.frontierDict[url]["delay"] = delay
-        main.frontier[url] = time.time() + delay
-        if domain in main.domainDelaysFrontier:
-            if main.frontierDict[url]["delay"] < main.domainDelaysFrontier[domain]:
-                main.frontier[url] = time.time() + main.domainDelaysFrontier[domain]
-                main.frontierDict[url]["delay"] = main.domainDelaysFrontier[domain]
+        frontierManagement.frontierDict[url]["delay"] = delay
+        frontierManagement.frontier[url] = time.time() + delay
+        if domain in frontierManagement.domainDelaysFrontier:
+            if frontierManagement.frontierDict[url]["delay"] < frontierManagement.domainDelaysFrontier[domain]:
+                frontierManagement.frontier[url] = time.time() + frontierManagement.domainDelaysFrontier[domain]
+                frontierManagement.frontierDict[url]["delay"] = frontierManagement.domainDelaysFrontier[domain]
         
     
         
           
 #input:
 #        - location, code: see fetchSingleResponse in urlRequestManagement.py
-#        - info: main.frontierDict[url]
+#        - info: frontierManagement.frontierDict[url]
 #        - responseHttpErrorTracker: responseHttpErrorTracker
 #        - retry: The retry- value as returned by retry from helpers.py 
 #        - noHandleCodes: If this is True, then codeHandler is not called in the function body and None is returned
@@ -125,7 +124,8 @@ def statusCodesHandler(url, location, code, info, retry, noHandleCodes=False):
         else:
             responseHttpErrorTracker[domain]["urlData"][url]["counters"] ["connection failed"] +=1
         responseHttpErrorTracker[domain]["data"] += [(datetime.fromtimestamp(time_).isoformat(),"connection failed")]
-        responseHttpErrorTracker[domain]["data"] = responseHttpErrorTracker[domain]["data"][-100:]    
+        responseHttpErrorTracker[domain]["data"] = responseHttpErrorTracker[domain]["data"][-100:]
+        code = "connection failed"    
             
         
     
@@ -135,8 +135,8 @@ def statusCodesHandler(url, location, code, info, retry, noHandleCodes=False):
     result = handleCodes(url, code, location, info)
     if retry:
         # if for whatever reason there was a retry- value received in the http- response (in fetchSingleResponse in urlRequestManagement)
-        # we respect it, and thus need to re-schedule the url in the main.frontier accordingly
-        main.frontier[url] = main.frontier[url]+ retry
+        # we respect it, and thus need to re-schedule the url in the frontierManagement.frontier accordingly
+        frontierManagement.frontier[url] = frontierManagement.frontier[url]+ retry
     
     return result
     
@@ -146,7 +146,7 @@ def statusCodesHandler(url, location, code, info, retry, noHandleCodes=False):
 
 # detects if a URL is the fifth entry in a chain 
 # of reroutes (3.xx- http- status- codes with location- field non- empty). If this is the case, all the URLs in the list get
-# taken from the main.frontier and the first url of the list is disallowed
+# taken from the frontierManagement.frontier and the first url of the list is disallowed
 # input:
 #       - location: The new url, in case of a redirect
 #       - url: the current url 
@@ -158,13 +158,15 @@ def statusCodesHandler(url, location, code, info, retry, noHandleCodes=False):
 # REQUIREMENTS: location and url need to be absolute and not relative urls
 def handle3xxLoop(url,location, code):
     '''handles reroutes (i.e. 3.xx http- status- codes)'''
+    
+    from frontierManagement import moveAndDel
     time_ = time.time()
     domain = helpers.getDomain(url)
     newUrl = url
     values = [True, url]
     
     if not domain:
-        raise main.Error(f'''T {url}" has no recognizable domain,, but this should have been detected much 
+        raise frontierManagement.Error(f'''T {url}" has no recognizable domain,, but this should have been detected much 
                     earlier in the call hierarchy!''')
     
     # if 299< code or code > 400:
@@ -175,16 +177,16 @@ def handle3xxLoop(url,location, code):
         newDomain = helpers.getDomain(newUrl)
         values[1] = newUrl
         # if this is no domain, leave values[0] as True, the error will then be caught by readFrontier later on
-        # after the urls has been being written back in the main.frontier, the http request will report none (if the domain was not valid,
+        # after the urls has been being written back in the frontierManagement.frontier, the http request will report none (if the domain was not valid,
         # the url also mustn't be)
         if newDomain:
             statusCodesHandler(newUrl, None, None, None, None, noHandleCodes= True)
-            loopList = responseHttpErrorTracker[domain]["urldata"][url]["loopList"]
+            loopList = responseHttpErrorTracker[domain]["urlData"][url]["loopList"]
             loopList.append((newUrl, code, time_))
             
-            if (len(responseHttpErrorTracker[newDomain]["urldata"][newUrl]["looplist"]) <
+            if (len(responseHttpErrorTracker[newDomain]["urlData"][newUrl]["loopList"]) <
                         len(loopList)+1):
-                responseHttpErrorTracker[newDomain]["urldata"][newUrl]["looplist"] = loopList
+                responseHttpErrorTracker[newDomain]["urlData"][newUrl]["loopList"] = loopList
                 
             
             if len(loopList) == 5:
@@ -207,15 +209,16 @@ def handle3xxLoop(url,location, code):
 #               url: the url for which we received a http- response with status_code code
 #               code:  status code of the http- response of url (fetchSingleRespnse in urlRequestManagement.py)
 #               location: the new url in case of a redirect (3.xx code)
-#               info: the content of main.frontierDict[url]
+#               info: the content of frontierManagement.frontierDict[url]
 # output:
 #          [<Boolean>,newUrl], where the boolean is True if and only if the value of code was of form 2.xx
 #          newUrl is a url, which might be different than url, in case a redirection happened (code was of form 3.xx)
 #
 def handleCodes(url, code, location, info):
+    '''deals with the http- status- codes'''
+    from frontierManagement import moveAndDel
     domain = helpers.getDomain(url)
     values = [False, url]
-    
     
     counter = responseHttpErrorTracker[domain]["urlData"][url]["counters"] [str(code)]
     
@@ -225,7 +228,7 @@ def handleCodes(url, code, location, info):
     # now we just decide what happens at which code by case- distinction
     
     # this is the case if no http- response at all was received
-    if not code:
+    if code == "connection failed":
         sample = 1
         if counter == 3:
                moveAndDel(url, "counter")
@@ -290,11 +293,11 @@ def handleCodes(url, code, location, info):
             
         else:
 
-            main.frontierDict[url] = info
+            frontierManagement.frontierDict[url] = info
             info["delay"] = 3600
-            main.frontier[url] = main.frontier[url] + 3600
-            if main.domainDelaysFrontier[domain]['delay'] > main.frontier[url]:
-                main.frontier[url] = main.domainDelaysFrontier[domain]
+            frontierManagement.frontier[url] = frontierManagement.frontier[url] + 3600
+            if frontierManagement.domainDelaysFrontier[domain]['delay'] > frontierManagement.frontier[url]:
+                frontierManagement.frontier[url] = frontierManagement.domainDelaysFrontier[domain]
                 
         sample = 0.75
     # all other http status-codes that were not covered until now 

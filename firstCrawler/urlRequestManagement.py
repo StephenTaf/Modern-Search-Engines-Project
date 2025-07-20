@@ -52,7 +52,7 @@ async def fetchSingleResponse(client,url):
             # domain we called earlier on in the future -> major time- saving
             domain = helpers.getDomain(url)
             if domain and domain in robotsTxtManagement.robotsTxtInfos:
-                robot =  robotsTxtManagement.robotsTxtInfos[domain]
+                robot = None
             else:
                 robotResponse = await client.get(urljoin(url, "/robots.txt"))
                 robot = robotResponse.text
@@ -76,7 +76,7 @@ async def fetchSingleResponse(client,url):
             # is needed for detection of redirect- loops as well as following normal redirects (see handle3xxLoop in statusCodeManagement)
             "location": response.headers.get("Location"),
             # this is a given date or time- value until which crawling is denied, this is used for example in 5.xx headers,
-            # we use it in 
+            # we use it in frontierRead in frontierManagement.py
             "retry" : response.headers.get("Retry-Value"),
             # if a http- response was received by client.get(url) this is true, otherwise it is false (see start of function body)
             "responded": True

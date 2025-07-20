@@ -1,144 +1,45 @@
 
 import databaseManagement
-
-
-
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%
-import random
-import requests
 from requests.adapters import HTTPAdapter
-import bisect #module for binary search
 import time
 import matplotlib.pyplot as plt
-import numpy as np
-import math
-import copy
-import re
-from datetime import datetime, timezone
-from dateutil.parser import parse
-from urllib.parse import urljoin, urlparse
-from UTEMA import UTEMA
 from heapdict import heapdict
 import threading 
-import duckdb
-from pympler import asizeof
-import html
-from seed import Seed as seed
-from exportCsv import export_to_csv as expCsv 
-from parsingStuff import parseText as getText
-from csvToListOfStings import csvToStringList
-from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
-from multiprocessing import Process
-import queue
-import sys
-import os
-import httpx
-import asyncio
-import warnings
 from databaseManagement import (store, load, storeCache, findDisallowedUrl, readUrlInfo, printNumberOfUrlsStored 
      ,updateTableEntry, closeCrawlerDB)
 import helpers
+from frontierManagement import frontierInit, manageFrontierRead
+import frontierManagement
+import statusCodeManagement
+# in order to be able to raise customed- errors
+class Error(Exception):
+    pass
 
 
 
-###### some global variables ########
+
+
+
 # just needed to manage the interactions between the the main_thread running the crawler and the input_thread running
-# the input
-inputDict = {"crawlingAllowed": True, "running": True}
-
-
-
-
-frontier = heapdict()
-frontierDict = {}
-
-# contains entries of form <domain-name>: delay
-# the delay is added to each individual delay in frontier if a new url is added and
-# its domain matches one of the keys in this dictionary here
-domainDelaysFrontier = {}
-
-
-# contains the UTEMA - averaged response times an the UTEMA- data per domain (for speed optimisation)
-responseTimesPerDomain = {}
-
-
-# here everything catched by the extractUrls function lands, that raises an error even in url- translation already
-strangeUrls = []
-
-# contains entries of form <domain-name>:
-robotsTxtInfos = {}
-
-
-# for the checking-if blocked
-   # resonseHttpCodes:
-    #         fields: 
-    #                - "domain": dictionary only exists, if it has at least 1 url- entry
-    #                            to see, when there is an url- entry see description of field
-    #                            "url" directly below 
-    # ------------------------------------------                            
-    # domain:
-    #        fields: 
-    #                - "delay": this delay is added to each of the calculated url- delays in 
-    #                           the frontier whenever an url is newly inserted
-    #                - "url": dictionary, this field only exists, if there was an error 
-    #                         (status_code had form 3.xx, 4.xx, or 5.xx) for a http- request 
-    #                         to this url, as this url was read from the frontier
-    #                - "data": List of tuples (<time of http response>, <status_code>), stores
-    #                          this for the last 100 requests
-    #                - the 3 UTEMA- related and created fields: 
-    #                          exist only after UTEMA(responseHttpErrorTracker, <weight>, domain) 
-    #                          was called the first time, for details see UTEMA
-    #-----------------------------------------
-    # url:
-    #        fields: 
-    #                - ""counters": dictionary created by handleURL, has fields of form                            <status_code : <integer> which are used to count the number
-    #                               of times a certain staus- code has been received for this url
-    #                - "data": dictionary created by handleURL, information
-    #                - all the UTEMA- related and created fields: 
-    #                                 exist only after UTEMA(responseHttpErrorTracker, <weight>, domain) 
-    #                                 was called the first time, for details see UTEMA
-    
-    #
-    #   
-responseHttpErrorTracker = {}
-
-
-
-# these urls should get stored as soin as the len(cachedUrls) > 10^3 entries
-cachedUrls = {}
-
-
-######## cache for all the disallowed URLS, disallowed means: We suspect we have
-# been blocked on the URL
-
-disallowedURLCache = {}
-
-######## cache for all the disallowed domains, disallowed means: We suspect we have
-# been blocked on the URL
-disallowedDomainsCache = {}
-
-
-
-
-
-# for safe threading:
-# lock is just for input_thread vs main_thread
-lock1 = threading.Lock()
-
-
-# trying to catch the input wihtout using locks
+# the inputReaction. The running- field acts as a switch in this, meaning once it is set to false, inputReaction as
+# well as the crawler break out of their respective while- loops
 stopEvent = threading.Event()
 
 
+# this only is there for capturing the input- command "stop", which can be entered after "Wait for input..." is displayed.
+# if "stop" is entered then into the terminal and enter is hit, the crawler will stop its crawling process and store the caches,
+# including frontierManagement.frontier and frontierDict and then the program will end. One can see, that the input worked, if "shut- down in progress"
+# is being displayed in the terminal
 def inputReaction():
+    '''if "stop" is entered, this will start the program- shutdown'''
     while not stopEvent.is_set():
         print("[debug] Waiting for input...")
         cmd = input()
         print("[debug] Received input:", cmd)
-        print("[input] trying to acquire lock")
-        print("[input] lock acquired")
         if cmd == "stop":
-            print("[input] setting flags to stop")
+            print("[shut- down in progress")
+            # sets the stop- event in order to break this while- loop as well as the while- loop
+            # in the crawler- function
             stopEvent.set()
             running = False
             print("the crawler now stores the frontier, load the caches into the databases and won't read from the frontier any more. Furthermore, after this is done, the crawler function call will end")
@@ -147,39 +48,50 @@ def inputReaction():
     
     
     
-        
+# this function is just used for printing useful statistics while the crawler- function is in progress (called every 10th
+# round of the crawling loop and then once after the loop stopped 
 def printInfo():
-    print(f"the actual number of cachedUrls: {len(cachedUrls)}")
-    print(f"the actual number of tracked websites (because of http- statuscode): {len(responseHttpErrorTracker)}")
-    print(f"the size of the frontier: {len(frontier)}")
-    print(f"the actual number disallowedUrls: {len(disallowedURLCache)}")
-    print(f"the actual number disallowedDomains: {len(disallowedDomainsCache)}")
+    print(f"the actual number of cachedUrls: {len(frontierManagement.cachedUrls)}")
+    print(f"the actual number of tracked websites (because of http- statuscode): {len(statusCodeManagement.responseHttpErrorTracker)}")
+    print(f"the size of the frontier: {len(frontierManagement.frontier)}")
+    print(f"the actual number disallowedUrls: {len(frontierManagement.disallowedURLCache)}")
+    print(f"the actual number disallowedDomains: {len(frontierManagement.disallowedDomainsCache)}")
     printNumberOfUrlsStored()
-    for index in range(min(10, len(frontier)-1)):
-                if frontier != []:
-                    url = list(frontier)[-(index-1)]
-                    if helpers.getDomain(url) in responseHttpErrorTracker:
-                        print(f'''In the domain {helpers.getDomain(url)} these were the last status_codes at the times: {[a[1] for a in responseHttpErrorTracker[helpers.getDomain(url)]["data"]]}''')
+    for index in range(min(10, len(frontierManagement.frontier)-1)):
+                if frontierManagement.frontier != []:
+                    url = list(frontierManagement.frontier)[-(index-1)]
+                    if helpers.getDomain(url) in statusCodeManagement.responseHttpErrorTracker:
+                        print(f'''In the domain {helpers.getDomain(url)} these were the last status_codes at the times: {[a[1] for a in statusCodeManagement.responseHttpErrorTracker[helpers.getDomain(url)]["data"]]}''')
                         print("--------------------------")
     print("---------------------------------------------------")
     
     
-    # this is the crawler function, it maintains the caches (puts them into storage)
-# if necessary, and opens
-# gets the initial seed list as input
+    
+# input:
+#        - a list of urls whit which are used to initalise the frontierManagement.frontier
+# 
+# What this function does:
+ # this is the heart of our crawler, the crawler- function. After loading the stored data (frontierManagement.frontier, frontierDict etc.)
+ # and initialising the frontierManagement.frontier with the seed, it manages the crawling- process by basically executing a
+ # while- loop which calls databaseManagement.storeCache in order to 
+ # check if the cachedUrls dictionary has 1000 entries, and if so it is being stored and then the cachedUrls dictionary is emptied,
+ # after that frontierManagement.manageFrontierRead iis being called. This loop runs until either the stopEvent is set,
+ # or the frontierManagement.frontier is empty.
+ # If this is the case it stores the cachedUrls, the frontierManagement.frontier, the frontierDict and additional information in the other caches into storage
 def crawler(lst):#inputThread):
-    global frontier, frontierDict, domainDelaysFrontier, disallowedURLCache, disallowedDomainsCache, cachedUrls, strangeUrls, responseHttpErrorTracker 
-    # IMPORTANT: Activate this in order to load the earlier frontier from the database
+    '''manages all of the crawling- process, including loading data into the caches in the beginning and storage'''
+    # IMPORTANT: Activate this in order to load the earlier frontierManagement.frontier from the database
     print("Input not yet available, please wait!")
-    global inputDict
-    frontier, frontierDict, domainDelaysFrontier, disallowedURLCache, disallowedDomainsCache, cachedUrls, strangeUrls, responseHttpErrorTracker = load(frontier, frontierDict, domainDelaysFrontier, disallowedURLCache, disallowedDomainsCache, cachedUrls, strangeUrls,
-         responseHttpErrorTracker)
+           
+    (frontierManagement.frontier, frontierManagement.frontierDict, frontierManagement.domainDelaysFrontier,
+    frontierManagement.disallowedURLCache, frontierManagement.disallowedDomainsCache, statusCodeManagement.responseHttpErrorTracker) = load()
     frontierInit(lst)
     counter = 0
-    threading.Thread(target=inputReaction, daemon=True).start()
-    print("Did it run twice????")
     
-    l = len(frontier)
+    # starts the inputReaction- thread
+    threading.Thread(target=inputReaction, daemon=True).start()
+    
+    l = len(frontierManagement.frontier)
     
     print("Initial l =", l)
     print("stopEvent.is_set() =", stopEvent.is_set())
@@ -187,17 +99,17 @@ def crawler(lst):#inputThread):
         # IMPORTANT: Want to store the cachedURLs into the dabase, after a certain amount of entries are reached
         # (currently 20 000, which should be doable by every system with 4GB RAM (still usable during it,
         # takes accordig to chatGPT only 1 GB ram))
-        if frontier.peekitem()[1] < time.time():
-            storeCache(cachedUrls)
+        if frontierManagement.frontier.peekitem()[1] < time.time():
+            storeCache(frontierManagement.cachedUrls)
             lastCachedUrl = manageFrontierRead()
             counter +=1
-            l = len(frontier) 
+            l = len(frontierManagement.frontier) 
                 
         if l == 0 or stopEvent.is_set():
             print(f"last storedUrl: {lastCachedUrl}")
             break
-        if len(frontier)!= len(frontierDict):
-            print(f"urls only contained in frontierDict, but not infrontier: {[a for a in frontierDict if a not in frontier]}")
+        if len(frontierManagement.frontier)!= len(frontierManagement.frontierDict):
+            print(f"urls only contained in frontierDict, but not infrontier: {[a for a in frontierManagement.frontierDict if a not in frontierManagement.frontier]}")
             raise Error("the frontier does not have the same lengt as the frontierDict!")
         
     
@@ -205,26 +117,24 @@ def crawler(lst):#inputThread):
             counter = 0
             printInfo()
 
-               
+    # sets the stop -event in order to close the inputReaction thread by breaking the while- loop there as well        
     stopEvent.set()  
     printInfo()
         
-     # IMPORTANT: Activate this in order to store cachedUrls into the database, when the program stops
-    storeCache(cachedUrls, forced = True)
 
-    store(frontier, frontierDict, domainDelaysFrontier, disallowedURLCache, disallowedDomainsCache, cachedUrls, strangeUrls,
-         responseHttpErrorTracker)
+    store(frontierManagement.frontier, frontierManagement.frontierDict, frontierManagement.domainDelaysFrontier, frontierManagement.disallowedURLCache, 
+          frontierManagement.disallowedDomainsCache, frontierManagement.cachedUrls, helpers.strangeUrls,
+         statusCodeManagement.responseHttpErrorTracker)
     
-   
-    
-    store(frontier, frontierDict, domainDelaysFrontier, disallowedURLCache, disallowedDomainsCache, cachedUrls, strangeUrls,
-         responseHttpErrorTracker)
-
-
+# this calls the crawler, and runs it such that frontierManagement.frontierInit receives the list lst in order to initialise the frontier with
+# the urls in lst. After the crawler is run for completion sake, it closes the connection to the CrawlerDB.duckdb database that was
+#  opened in databaseManagement.py
 def runCrawler(lst):
+    '''calls the crawler, and ensures it only does so on the main thread'''
     if __name__ == "__main__":
         crawler(lst) #)
         closeCrawlerDB()
+      
         
         
 #%%

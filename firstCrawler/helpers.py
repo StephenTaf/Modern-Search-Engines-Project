@@ -38,8 +38,6 @@ import os
 import httpx
 import asyncio
 import warnings
-from databaseManagement import (store, load, storeCache, findDisallowedUrl, readUrlInfo, printNumberOfUrlsStored 
-     ,updateTableEntry, closeCrawlerDB)
 import helpers
 
 
@@ -47,6 +45,11 @@ import helpers
 # This file really just contains small helper functions used by the other files in the folder
 ##############################################
 
+
+# here everything catched by helpers.getDomain lands, that does not have a valid domain- prefix (this means that it is not a real url,
+# at least presumably), but in our current (and regarding the project final) crawler version we don't use it, also conatins urls
+# for which urljoin from urllib.parse does not work
+strangeUrls = []
 
 # arguments:    
 #               lst: is a list of lexicographically ordererd items
@@ -146,11 +149,53 @@ def retry(value):
             
     return value
 
+      #------------
+# given the body of a html - page (i.e. the requests(url.text)) as a beautiful soup- structure
+# (not the text- body of an error- http - response (a response with code not of form 2.xx)),
+# we extract all the meaningful (clickable) urls we can find from this soup
+#input:
+#       - soup: The soup structure that beatiful soupe produces
+#       - base_url: needed in order to calculate the full url for the output- list, in case the given urls are only relative
+#output:
+#       - a list of the urls that were found
+# chatGPT wrote some parts of this: Pro: also works with xml, which the former function (commented out) does not
+def extractUrls(soup, base_url,):
+    '''extracts the urls from the given soup, if there are any clickkable ones'''
+
+    urls = set()
+    
+    if not soup:
+        return []
+
+    # --- HTML: clickable hrefs ---
+    for tag in soup.find_all("a", href=True):
+        href = tag["href"]
+        if href.startswith(("http", "/")):
+            urls.add(urljoin(base_url, href))
+
+    # --- XML: link tags and enclosures ---
+    for tag in soup.find_all(["link", "enclosure"]):
+        # Handle both: <link href="..."/> and <link>https://...</link>
+        url = tag.get("href") or tag.get("url") or tag.string
+        if url and url.strip().startswith(("http", "/")):
+            try:
+                urls.add(urljoin(base_url, url.strip()))
+
+            except ValueError:
+                strangeUrls.append(url.strip())
+
+    # Unescape HTML entities (e.g. &amp;)
+    urls = [html.unescape(u) for u in urls]
+    # we don't wanit urls linking to sitemaps, because we decided to 
+    # crawl site- structure aware (we store the depth of a link inside a site in cachedUrls[url]["linkingDepth"])
+    finalUrls = [url for url in urls if not helpers.isSitemapUrl(url)]
+    return finalUrls
 
 # used to extract from a given text_ and content type (the content type as stated in the body of the http- response of a url- request)
-# , if the contentType is either html or xml, the human- readible content (text) and the title as a typle (text, title). If this is not the case
-# it returns ("","")
-def parseText(text_, contentType):
+# as well as the urls from the given text
+# , if the contentType is either html or xml, it returns  the human- readible content (text) and the title, as well as 
+# the for our purpose relevant urls of this page (the clickable ones) as a tuple (text, title, urlList).
+def parseTextAndFetchUrls(text_, contentType, base_url):
     '''extracts text and title'''
     soup = None
     text = ""
@@ -163,7 +208,7 @@ def parseText(text_, contentType):
         htmlContent = "html" in contentType
     
         
-    # this is in order for Beautiful soup not give warnings, if the given text is neither xml nor html 
+    # this is in order for Beautiful soup not to give warnings, if the given text is neither xml nor html 
     warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning)
     if xmlContent or text_.strip().startswith("<?xml"):
         soup = BeautifulSoup(text_, "xml")
@@ -178,4 +223,6 @@ def parseText(text_, contentType):
         )
         if soup.title:
             title = soup.title.string
-    return (text,title)
+    urls = extractUrls(soup, base_url)   
+    
+    return (text,title, urls)

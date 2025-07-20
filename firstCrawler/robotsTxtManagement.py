@@ -103,7 +103,7 @@ def robotsTxtCheck(url, robotText, domainDelaysFrontier):
         # we suppose the robotsTxt does not exist, if we could not fetch it on first try
         # therefore we use this dummy- entry for future- refernces to the robots.txt of this 
         # url. 1.5 seconds of crawling- delay is very polite for todays conditions
-            robotsTxtInfos[domain] - {"allowed":[], "forbidden": [], "delay": 1.5}
+            robotsTxtInfos[domain] = {"allowed":[], "forbidden": [], "delay": 1.5}
             if domain not in domainDelaysFrontier:
                   domainDelaysFrontier[domain] = 1.5
                      

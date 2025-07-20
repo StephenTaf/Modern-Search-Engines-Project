@@ -24,7 +24,6 @@ from pympler import asizeof
 import html
 from seed import Seed as seed
 from exportCsv import export_to_csv as expCsv 
-from parsingStuff import parseText as getText
 from csvToListOfStings import csvToStringList
 from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
 from multiprocessing import Process
