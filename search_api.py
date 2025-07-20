@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 from retriever import Retriever
-from indexer.bm25 import BM25
+from indexer.bm25_indexer import BM25
 from indexer.embedder import TextEmbedder
 import config as cfg
 from indexer import indexer
@@ -26,6 +26,7 @@ logging.basicConfig(level=logging.INFO)
 retriever_instance = None
 indexer_instance = None
 embedder = None
+bm_25 = None
 db_path = cfg.DB_PATH
 if not db_path:
     logging.error("Database path is not set in config.py. Please set DB_PATH.")
@@ -33,7 +34,7 @@ db_conn = duckdb.connect(db_path, read_only=True)
 
 def initialize_search_engine():
     """Initialize the search engine components"""
-    global retriever_instance, indexer_instance, embedder, db_conn
+    global retriever_instance, indexer_instance, embedder, db_conn, bm_25
     
     # Check if already initialized to prevent double initialization
     if retriever_instance is not None:
@@ -48,8 +49,8 @@ def initialize_search_engine():
         embedder = TextEmbedder(cfg.DB_PATH, embedding_model=cfg.EMBEDDING_MODEL, read_only=True)
         
         if cfg.USE_BM25:
-            bm25 = BM25(duckdb.connect(cfg.DB_PATH))
-            bm25.fit()
+            bm_25 = BM25(cfg.DB_PATH, read_only=True)
+            #bm25.fit()
             logging.info("BM25 initialized successfully.")
         
         indexer_instance = indexer.Indexer(embedder=embedder, db_path=cfg.DB_PATH, read_only=True)
@@ -57,7 +58,7 @@ def initialize_search_engine():
       
         logging.info(f"Document indexing completed successfully in {time.time() - _tik:.2f} seconds.")
         # Initialize the retriever
-        retriever_instance = Retriever(embedder=embedder, indexer=indexer_instance, db_path=cfg.DB_PATH)
+        # retriever_instance = Retriever(embedder=embedder, indexer=indexer_instance, db_path=cfg.DB_PATH)
         
         logging.info("Search engine initialized successfully!")
         return True
@@ -71,8 +72,8 @@ async def search():
     """Search endpoint that returns results in the format expected by the UI"""
     try:
         _tik = time.time()
-        if not retriever_instance:
-            return jsonify({'error': 'Search engine not initialized'}), 500
+        # if not retriever_instance:
+        #     return jsonify({'error': 'Search engine not initialized'}), 500
             
         data = request.get_json()
         query = data.get('query', '').strip()
@@ -84,13 +85,14 @@ async def search():
         if not query:
             return jsonify({'error': 'Query is required'}), 400
             
-        results = retriever_instance.quick_search(query, top_k=top_k, return_unique_docs=True)
+        #results = retriever_instance.quick_search(query, top_k=top_k, return_unique_docs=True)
+        results = bm_25.search(query, top_k=top_k)
         logging.info((f"Retrieved {len(results)} results for query: {query} in {time.time() - _tik:.2f} seconds"))
     
         rerank_request_json = {
             "doc_ids": [str(result['doc_id']) for result in results],
             "query": query,
-            "similarities": [result['similarity'] for result in results] if results else None,
+            "similarities": [result['score'] for result in results] if results else None,
             "call_api": True
         }
         async with httpx.AsyncClient(timeout=cfg.RERANKER_TIMEOUT) as client:

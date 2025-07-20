@@ -1,5 +1,5 @@
 from retriever import Retriever
-from indexer.bm25 import BM25
+from indexer.bm25_indexer import BM25
 from indexer.embedder import TextEmbedder
 import config as cfg
 from indexer import indexer
@@ -18,8 +18,8 @@ def main():
     embedder = TextEmbedder(db_path, embedding_model=cfg.EMBEDDING_MODEL, read_only=read_only)
     
     if cfg.USE_BM25:
-        bm25 = BM25(duckdb.connect(db_path))
-        bm25.fit()
+        bm25 = BM25(db_path, read_only=read_only)
+        bm25.build_index()
         logging.info("BM25 initialized successfully.")
     
     
