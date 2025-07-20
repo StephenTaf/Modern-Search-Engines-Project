@@ -146,7 +146,7 @@ function loadDataAndRender(query) {
 
 function renderBubbleChart(data) {
     console.log("=== BUBBLE CHART DEBUG ===");
-    console.log("Input data:", data);
+    console.log("Data:", data);
     console.log("Data type:", Array.isArray(data) ? "array" : typeof data);
     console.log("Data length:", Array.isArray(data) ? data.length : "N/A");
     
@@ -208,7 +208,7 @@ function renderBubbleChart(data) {
             .attr("y1", 0)
             .attr("x2", x)
             .attr("y2", virtualHeight)
-            .attr("stroke", "#e0e0e0")
+            .attr("stroke", "#d7d7d7ff")
             .attr("stroke-width", 0.5)
             .attr("opacity", 0.3);
     }
@@ -220,7 +220,7 @@ function renderBubbleChart(data) {
             .attr("y1", y)
             .attr("x2", virtualWidth)
             .attr("y2", y)
-            .attr("stroke", "#e0e0e0")
+            .attr("stroke", "#d7d7d7ff")
             .attr("stroke-width", 0.5)
             .attr("opacity", 0.3);
     }
@@ -241,22 +241,19 @@ function renderBubbleChart(data) {
                 .style("cursor", "-webkit-grab");
         });
 
+
     // Group by domain
     const domains = d3.group(data, d => d.domain);
+    // Save more data in the array clusters
     const clusters = Array.from(domains, ([domain, docs]) => ({
         domain,
         docs,
-        count: docs.length,
-        totalScore: d3.sum(docs, d => d.score), // Use raw_score instead of normalized score
-        avgScore: d3.mean(docs, d => d.score),  // Use raw_score for average too
-        totalNormalizedScore: d3.sum(docs, d => d.score) // Keep normalized for other purposes
+        totalScore: d3.sum(docs, d => d.score),
     }));
-
-    console.log("Data:", data);
 
     console.log("Domains found:", Array.from(domains.keys()));
     console.log("Clusters:", clusters);
-    console.log(clusters.map(d => d.totalScore));
+    console.log("Domains total Scores:", clusters.map(d => d.totalScore));
 
 
     // Handle case where no clusters are found
@@ -274,20 +271,19 @@ function renderBubbleChart(data) {
 
     const color = d3.scaleOrdinal(d3.schemeCategory10);
 
+    // Define function to calculate radius by either score or total score for doc or domain/cluster
     const docRadiusScale = d3.scaleLinear()
         .domain(d3.extent(data, d => d.score))
         .range([18, 50]);
-
     const clusterRadiusScale = d3.scaleSqrt()
         .domain([0, d3.max(clusters, d => d.totalScore)])
-        .range([30, 250]); // Increased cluster radius range
+        .range([30, 250]);
 
-    // Position clusters using a more spread out approach in virtual space
-    const numClusters = clusters.length;
+    
     const centerX = virtualWidth / 2;
     const centerY = virtualHeight / 2;
     
-    // First simulation to find out the clustercenters
+    // First simulation to position the cluster-centers (each cluster being a domain)
     const clusterSim = d3.forceSimulation(clusters)
         .force("charge", d3.forceManyBody().strength(1000))
         .force("center", d3.forceCenter(centerX, centerY))
@@ -305,7 +301,8 @@ function renderBubbleChart(data) {
 
     console.log("Cluster positions:", clusters.map(c => ({domain: c.domain, x: c.x, y: c.y})));
 
-    // Calculate better initial positioning based on content bounds
+
+    // Calculate initial positioning of the zoom (view) based on content bounds
     let contentBounds, initialTransform;
     try {
         contentBounds = {
@@ -322,15 +319,16 @@ function renderBubbleChart(data) {
         
         // Calculate scale to fit content in canvas with some padding
         const padding = 0.35;
-        const scaleX = (canvasWidth * (1-padding)) / contentWidth; // Reduced from 0.8 for more zoom
-        const scaleY = (canvasHeight * (1-padding)) / contentHeight; // Reduced from 0.8 for more zoom
-        const optimalScale = Math.min(scaleX, scaleY, 1.2); // Increased from 0.8 for better readability
+        const scaleX = (canvasWidth * (1-padding)) / contentWidth;
+        const scaleY = (canvasHeight * (1-padding)) / contentHeight;
+        const optimalScale = Math.min(scaleX, scaleY, 1.2);
         
-        // Center the content
+        // Center of the content
         const contentCenterX = (contentBounds.minX + contentBounds.maxX) / 2;
         const contentCenterY = (contentBounds.minY + contentBounds.maxY) / 2;
         
-        const translateX = canvasWidth / 2 - contentCenterX * optimalScale *1.2;//Got these -180 and -70 from testing
+        // Calculate translates that are the coordinates, so that our view/zoom is centered
+        const translateX = canvasWidth / 2 - contentCenterX * optimalScale *1.2; // Got the 1.2 factor from testing. Seems to center the view nicely
         const translateY = canvasHeight / 2 - contentCenterY * optimalScale *1.2;
 
         console.log(`Content Center: (${contentCenterX}, ${contentCenterY})`);
@@ -352,6 +350,7 @@ function renderBubbleChart(data) {
         console.log("Using fallback transform:", initialTransform);
     }
     
+    // Call to position the zoom/view at correct translate and scale
     svg.call(zoom.transform, initialTransform);
 
     // Map domain names to cluster centers
@@ -363,28 +362,9 @@ function renderBubbleChart(data) {
         .force("y", d3.forceY(d => clusterCenterMap[d.domain]?.y || centerY).strength(0.8))
         .force("collision", d3.forceCollide().radius(d => Math.max(18, docRadiusScale(d.score)) + 4))
         .force("charge", d3.forceManyBody().strength(20))
-        .alphaDecay(0.01) // Slower decay for better settling
-        .velocityDecay(0.2) // Less velocity decay
+        .alphaDecay(0.01)
+        .velocityDecay(0.2)
         .on("tick", ticked);
-    
-    // Add custom force to keep nodes within cluster bounds
-    docSim.force("cluster", () => {
-        data.forEach(d => {
-            const cluster = clusterCenterMap[d.domain];
-            if (cluster) {
-                const dx = d.x - cluster.x;
-                const dy = d.y - cluster.y;
-                const distance = Math.sqrt(dx * dx + dy * dy);
-                const maxDistance = cluster.radius + 50; // Allow some spread beyond cluster circle
-                
-                if (distance > maxDistance) {
-                    const scale = maxDistance / distance;
-                    d.x = cluster.x + dx * scale;
-                    d.y = cluster.y + dy * scale;
-                }
-            }
-        });
-    });
 
 
     const clusterGroups = mainGroup.selectAll(".cluster")
@@ -393,7 +373,7 @@ function renderBubbleChart(data) {
         .attr("class", "cluster")
         .attr("transform", d => `translate(${d.x},${d.y})`);
 
-    // Add background circles for cluster labels with better sizing
+    // Add background circles for domains (sized depending on total score)
     clusterGroups.append("circle")
         .attr("r", d => Math.max(30, clusterRadiusScale(d.totalScore)))
         .attr("fill", d => color(d.domain))
@@ -415,31 +395,32 @@ function renderBubbleChart(data) {
         .attr("stroke-width", 2)
         .attr("paint-order", "stroke");
 
-    // Step 1: Determine top 10 documents by score
+    // Determine top 10 documents by score
     const topDocs = data
-    .slice() // make a shallow copy
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 10);
+        .slice()
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 10);
 
     const topDocSet = new Set(topDocs);
 
-    console.log("topDocSet:", topDocSet);
+    console.log("Top 10 Documents Set:", topDocSet);
 
     const nodeGroups = mainGroup.selectAll(".doc-node-group")
         .data(data)
         .enter().append("g")
         .attr("class", "doc-node-group");
 
+    // Add foreground circles for documents (sized depending on their score)
     const node = nodeGroups.append("circle")
         .attr("class", "doc-node")
         .attr("r", d => Math.max(18, docRadiusScale(d.score)))
         .attr("fill", d => color(d.domain))
-        .attr("fill-opacity", d => topDocSet.has(d) ? 0.9 : 0.7)
+        .attr("fill-opacity", d => topDocSet.has(d) ? 0.9 : 0.7) // Make top 10 docs more opaque
         .attr("stroke", "#333")
         .attr("stroke-width", 1.5)
         .attr("stroke-opacity", 0.9);
 
-    // Add titles inside bubbles for larger ones
+    // Add titles inside bubbles for the larger ones
     const nodeText = nodeGroups.append("text")
         .attr("class", "doc-node-text")
         .attr("text-anchor", "middle")
@@ -453,7 +434,7 @@ function renderBubbleChart(data) {
             const maxLength = Math.floor(radius / 3.5);
             return d.title.length > maxLength ? d.title.substring(0, maxLength) + "..." : d.title;
         })
-        .style("display", d => docRadiusScale(d.score) > 25 ? "block" : "none");
+        .style("display", d => docRadiusScale(d.score) > 35 ? "block" : "none");
 
     // Add event listeners to the group to prevent flickering
     nodeGroups
@@ -481,19 +462,19 @@ function renderBubbleChart(data) {
         .on("click", (event, d) => window.open(d.url, "_blank"))
         .style("cursor", "pointer");
 
-    // Remove any existing tooltips before creating a new one
+    // Remove any existing tooltips before creating a new one (tooltip is a preview of the document)
     d3.selectAll(".tooltip").remove();
     const tooltip = d3.select("body").append("div")
         .attr("class", "tooltip");
 
-    // Add zoom controls
+    // Add zoom controls (top left corner of svg)
     const controls = svg.append("g")
         .attr("class", "zoom-controls")
-        .attr("transform", `translate(${canvasWidth - 80}, 20)`);
+        .attr("transform", `translate(20, 20)`);
 
     const controlsBackground = controls.append("rect")
         .attr("width", 60)
-        .attr("height", 130)
+        .attr("height", 115)
         .attr("fill", "white")
         .attr("stroke", "#ccc")
         .attr("stroke-width", 1)
@@ -541,12 +522,12 @@ function renderBubbleChart(data) {
 
     const resetBtn = controls.append("g")
         .attr("class", "zoom-btn")
-        .attr("transform", "translate(10, 75)")
+        .attr("transform", "translate(10, 80)")
         .style("cursor", "pointer");
 
     resetBtn.append("rect")
         .attr("width", 40)
-        .attr("height", 20)
+        .attr("height", 25)
         .attr("fill", "#28a745")
         .attr("rx", 3);
 
@@ -557,25 +538,6 @@ function renderBubbleChart(data) {
         .attr("fill", "white")
         .attr("font-size", "9px")
         .text("Default");
-
-    const overviewBtn = controls.append("g")
-        .attr("class", "zoom-btn")
-        .attr("transform", "translate(10, 105)")
-        .style("cursor", "pointer");
-
-    overviewBtn.append("rect")
-        .attr("width", 40)
-        .attr("height", 20)
-        .attr("fill", "#6c757d")
-        .attr("rx", 3);
-
-    overviewBtn.append("text")
-        .attr("x", 20)
-        .attr("y", 14)
-        .attr("text-anchor", "middle")
-        .attr("fill", "white")
-        .attr("font-size", "8px")
-        .text("Zoom Out");
 
     // Add zoom control functionality
     zoomInBtn.on("click", () => {
@@ -596,28 +558,8 @@ function renderBubbleChart(data) {
         );
     });
 
-    overviewBtn.on("click", () => {
-        // Zoom out to see everything but keep it readable
-        // Use the same calculation as initial but with more padding
-        const overviewScale = Math.min(optimalScale * 0.7, 0.5); // 70% of optimal scale
-        const overviewTranslateX = canvasWidth / 2 - contentCenterX * overviewScale;
-        const overviewTranslateY = canvasHeight / 2 - contentCenterY * overviewScale;
-        
-        const overviewTransform = d3.zoomIdentity
-            .translate(overviewTranslateX, overviewTranslateY)
-            .scale(overviewScale);
-        svg.transition().duration(500).call(
-            zoom.transform, overviewTransform
-        );
-    });
-
     function ticked() {
         nodeGroups.attr("transform", d => `translate(${d.x},${d.y})`);
-        
-        // Update label positions for top documents
-        // labels
-        //     .attr("x", d => d.x)
-        //     .attr("y", d => d.y - Math.max(18, docRadiusScale(d.score)) - 12);
     }
 }
 
