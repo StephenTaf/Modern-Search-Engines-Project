@@ -1,65 +1,35 @@
-  
 
-
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%
-import random
-import requests
 from requests.adapters import HTTPAdapter
-import bisect #module for binary search
 import time
 import matplotlib.pyplot as plt
-import numpy as np
-import math
 import copy
-import re
-from datetime import datetime, timezone
-from dateutil.parser import parse
-from urllib.parse import urljoin, urlparse
-from UTEMA import UTEMA
-from heapdict import heapdict
-import threading 
-import duckdb
-from pympler import asizeof
 import html
-from seed import Seed as seed
-from exportCsv import export_to_csv as expCsv 
 from parsingStuff import parseText as getText
-from csvToListOfStings import csvToStringList
-from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
-from multiprocessing import Process
-import queue
-import sys
-import os
-import httpx
 import asyncio
-import warnings
 from databaseManagement import (store, load, storeCache, findDisallowedUrl, readUrlInfo, printNumberOfUrlsStored 
      ,updateTableEntry, closeCrawlerDB)
 import helpers
+import main
+import statusCodeManagement
 
+##############################################
+# This file is about dealing with the frontier (filling it, reading it out, extracting new urls, updating the caches if necessary)
+##############################################
   
   
   #------------
 # given the body of a html - page (i.e. the requests(url.text))
 # for which we already checked that it receives meaningful text
-# (not the text- body of an error- http - request),
-# we extract all the urls we can find from this page
-#%%%
-# does search for clickable urls in both html and xml 
-# def extractURLs(text,baseUrl):
-#      urls = re.findall(r'''href\s*=\s*(".+?"|'.+?')''', text, re.DOTALL)
-#      urls = [a[1:-1] for a in urls if a[1:-1].startswith(("/","http"))]
-#      full_urls = []
-#      for url in urls:
-#         try:
-#             full_urls.append(urljoin(baseUrl, url) )
-#         except ValueError:
-#             strangeUrls.append(url)
-            
-#      full_urls = [html.unescape(a) for a in full_urls]
-
-# chagpt wrote parts of this: Pro: also works with xml, which the former function (commented out) does not
+# (not the text- body of an error- http - response (a response with code not of form 2.xx)),
+# we extract all the meaningful (clickable) urls we can find from this page
+#input:
+#       - text: The text- file in which we want to search for meaningful urls
+#       - base_url: needed in order to calculate the full url for the output- list, in case the given urls are only relative
+#output:
+#       - a list of the urls that were found
+# chagpt wrote some parts of this: Pro: also works with xml, which the former function (commented out) does not
 def extractUrls(text, base_url,):
+    '''extracts the urls from the text, if there are any clickkable ones'''
     soup_type = "xml" if "<?xml" in text or "<rss" in text or "<feed" in text else "html.parser"
     try:
         
@@ -94,8 +64,19 @@ def extractUrls(text, base_url,):
         return []
         
               
-# this is only called, if the url is already in the frontier
+# input:
+#       - url: the current url for which we want to update the information stored in frontierDict 
+#       - ancestorUrl: The name of the url which either redirected (over a path of length < 5) to this url,
+#        or linked to the url on which we fetched this url and stored it in the frontier
+#       - score: The tueEngScore of the ancestorUrl
+#
+# what this function does: 
+# It updates the list of incoming links, the domainLinkingDepth and the linkingDepth of the given url, all of
+# those are used in the metric fucntion of metric.py, which is called in frontierRead belowe this function here. 
+# For further information about these measurements, see the comments about
+# the table urlsDB in the CrawlerDB database in the file databaseManagement.py 
 def updateFrontier(url, ancestorUrl, score):
+    '''updates urls domainLinkinDepth, and linkingDepth metrics, as well as the incomingLinks in frontierDict'''
     domain = helpers.getDomain(url)
     
     if domain:
@@ -113,10 +94,21 @@ def updateFrontier(url, ancestorUrl, score):
     
     
     
-# this function gets an url, reads all urls that are of interest to us and then checks for each of them if they
-# are still admissible, i.e, if they have been disallowed or if they are already stored, in this case some of their
-# information needs to be updated (happens via updateInfo). If this is not the case, it throws a list with entries of the form [<Unix time starting at which access to the url is allowed>, url, {"delay": <delay>, "linkingDepth": "domainLinkingDepth": <integer>, "incomingLinks": < list of parent- urls with tueEngScores>}] into the frontier
+# input:
+#       url: this is just the url for which we want to write or update a frontier entry if we are allowed according to the robotsfile
+#       robotText: This is either None (if fetchSingleResponse in urlRequestManagement.py did not find a robots.txt- file, or the 
+#       trying to find one failed for some reason)
+#       predUrl: The url of the website on which we last found a link to this url
+#       score: The tueEng score of the predUrl website
+#
+# What this function does:
+# It checks if the url is in the frontier, if so it updates the url by calling updateFrontier, further it checks if this url
+# was for some reason disallowed earlier on (if we suspected (short- time) blocking of our crawler) via calling findDisallowedUrl
+# if this was the case this function does nothing. If all of this is not the case it checks if our crawler is allowed to access the
+# wepsite the url belongs to ny running a robotsTxtCheck. If this is successful it proceeds to write the entries for the given url
+# into the frontier and the frontierDict 
 def frontierWrite(url, robotText, predURL, score):
+    '''if not already visited, scheduled to visit, or forbidden, creates a frontier and frontierDict entry for the given url'''
     domain = helpers.getDomain(url,strangeUrls=strangeUrls, useStrangeUrls = True )
     if not domain:
         pass
@@ -130,8 +122,9 @@ def frontierWrite(url, robotText, predURL, score):
         robotsCheck = robotsTxtCheck(url,robotText)
     
         if robotsCheck [1]:
-            if url not in frontierDict:
-                frontierDict[url] = {}
+            # if url not in frontierDict:
+            #     frontierDict[url] = {}
+            
             # This is only the case, if the url was part of the seed list
             if not predURL:
                 frontier[url] = time.time()
@@ -169,8 +162,21 @@ def frontierWrite(url, robotText, predURL, score):
                         
 
     
-    
+# input:   
+#       - urlDict: This contains information fetched by fetchSingleResponse in urlRequestManagement.py for a single url
+#       - info: this is just frontierDict[url] for that url
+# 
+# what this function does: 
+# checks if the url stored in urlDict came from a valid http- resoponse (status- code of form 2.xx or sometimes 3.xx (see handleCodes
+# and handle 3xxLoop in statusCodeManagement.py for more information on that)), if it did but it relocated to a new url, the new url is
+# written into frontierDict and frontier by usage of frontierWrite, and nothing else happens. If it is valid and no relocation happened,
+# then the url is processed, meaning an entry is created in cachedUrls and afterwards it is deleted from all the caches by using moveAndDel.
+# Furthermore it writes all the found urls in the content of the site belonging to the url into the frontier and frontierDict by
+# usingfrontierWrite.
+# For more information on that see moveAndDel.
+# if it did 
 def frontierRead(urlDict, info):
+    ''' processes the url for which it is given information about, and then, if everything runs through makes an entry for '''
     from metric import metric
     url = urlDict["url"]
     response = urlDict["responded"]
@@ -217,13 +223,12 @@ def frontierRead(urlDict, info):
         text = textAndTitle[0]
         info["text"] = text
         info["lastFetch"] = time.time()
-        # if f"https://www.medizin.uni-tuebingen.de/en-de/startseite" in frontierDict:
-        #     print("2dfsfsfsf-------not in frontier------")
+
         try:
             info["incoming"]= frontierDict[url]["incomingLinks"]
         except:
             raise Error(f"fails with url {url}")
-        # We decided not to use this in the final version of our crawler: too much storage space
+        # We decided not to use this in the final version of our crawler: too much storage space consumed
         # info["outgoing"] = extractUrls(rawText, url)
         
         info["linkingDepth"] = frontierDict[url]["linkingDepth"]
@@ -231,9 +236,10 @@ def frontierRead(urlDict, info):
         
         info["tueEngScore"] = metric(info, url)
         if info["tueEngScore"] >-0.1:
-            # why  info["domainLinkingDepth"]<5 ? Well the the amount of links
-            # to get from the main page of uni tübingen to the webpage of an computer 
-            # science professor is roughly 5
+            # Seemed like a good crawling- depth, but in gaining our url- Database we played 
+            # around with this value, but this can be used as a good initial value, we think
+            # since relevance to Tübingen and English seems to drop when moving further out either
+            # domain- wise (linkingDepth) or with regard to the minimum path of connectiing links on a domain itself (domainLinkingDepth)
             if info["domainLinkingDepth"]<5 and info["linkingDepth"]<5:
                 #if len(info["outgoing"]) == 0:
                 #       raise Error(f"sucessorUrl in None, the outgoing list is {url}")
@@ -241,11 +247,22 @@ def frontierRead(urlDict, info):
                     frontierWrite(successorUrl,robot, url, info["tueEngScore"])
         moveAndDel(url, "success")
     return (True, url)
-        
-# maxNumberOfUrls is very important, since it controls the maximal number of parallel 
-# http requests       
+
+# what this function does:        
+# this function basically collects a list of the first 100 urls, which appear in sequential order in
+# the frontier at time of fetching, and satisfy the constraints, that none of the urls can be of the
+# same domain (call to lstAllDifferntDomains). It then fetches all these urls asynchronically (using urlRequestManagement.fetchResponses)
+# and then gives the fetched information one by one to frontierRead in order to process it.
+#
+# output: The last stored url, i.e. the last url for which currently was created an entry in cachedUrls
+   
 def manageFrontierRead():
+    '''reads multiple urls of different domains stored in the frontier and processes them'''
     lastStoredUrl = ""
+    
+    # can be played around with, essentially it limits size of the url - list 
+    # which fetchResponses in urlRequestManagement.py gets per call (i.e., the maximal
+    # number of possible parallel http- calls)
     maxNumberOfUrls = 100
     urlsList = lstAllDifferentDomains(maxNumberOfUrls) 
     responses = asyncio.run(fetchResponses(urlsList))
@@ -270,13 +287,7 @@ def frontierInit(lst):
         
         
         
-        
-        
-# basic idea:   gets a url and a reason, depending on the reason
-#               informations about url/ the domain of the url are #                deleted/ added
-#               to different data structures. For details:
-#               see the comments in the function body
-#               
+                   
 # usage:        used in handleCodes, handle3xx.Loop
 # arguments:    
 #               url: the url for which wee want the informations stored/ deleted
@@ -285,29 +296,25 @@ def frontierInit(lst):
 #               -
 # REQURIEMENT: url must be in url- frontier
 def moveAndDel(url, reason):
+    '''Deletes the url from the caches, an in case of any reason other than "success" creates a disalloweURLCache or disallowedDomainCache entry, dependeing on the reason'''
     domain = helpers.getDomain(url)
     
     if not domain:
         return
- 
-
-    
-    # in the following we check if the required entry of the responseHttpErrorTracker does 
-    # indeed exist 
-    
+    # If there are no errors in the code, this case should never be activated
     if url in frontier:
         urlInFrontier = True
-            
-    if reason == "average":
+          
         try:
             data =  responseHttpErrorTracker[domain]["data"] 
         except KeyError as e:
+            # This should most definitely not happen!
             print("Somehow moveAndDel gets a url for which responseHttpErrorTracker[domain]['data']  does not exist")            
         
     # in this case we check if at some point there 
     # was a failed http- request regarding this message
-    # if there was, we delete the associated field 
-    # from the responseHttpErrorTracker   
+    # if there was, we delete the associated field, since we now successfull fetched all information we want associated with the url
+    # and therefore need no further tracking of http- status- codes from responses with regard to this url
     if reason == "success":
         if domain in responseHttpErrorTracker:
             if url in domain:
@@ -316,8 +323,9 @@ def moveAndDel(url, reason):
             del frontierDict[url]
             del frontier[url]
         
-    # this is the case, when there have been "too many"
-    # (according to the weighted average, see handleCodes and UTEMA)failed http- requests in a certain domain
+    # this means that in statusCodeManagement.handleCodes the UTEMA- threshold in the last if- clause in the funciton body was
+    # reached, which means we get too many too costly errors from the domain of the url overall, so we don't want to continue to 
+    # crawl it, and suspect we might have been blocked at least for now
     elif reason == "average":
         disallowedDomainsCache[domain] = {"data": copy.deepcopy(data), "received": str(time.ctime())}
         del responseHttpErrorTracker[domain]
@@ -328,7 +336,7 @@ def moveAndDel(url, reason):
         
     # this is the case, when there have been too many
     # failed http- requests, with a certain status_code
-    # , see handleCodes   
+    # , see handleCodes in statusCodeManagement.py for more details  
     elif reason == "counter":
         disallowedURLCache[url]  = {"reason": "counter", 
             "data": copy.deepcopy(responseHttpErrorTracker[domain]["data"] [-1]), "received": time.ctime()}
@@ -339,7 +347,7 @@ def moveAndDel(url, reason):
         
     
     # this is the case, if there was a redirect- loop
-    # detected, see handleCodes and handle3xxLoop
+    # detected, see handleCodes and handle3xxLoop in  statusCodeManagement.py for more details  
     elif reason == "loop":
         loopList = responseHttpErrorTracker[domain]["urlData"][url]["loopList"]
         disallowedURLCache[url]  = ({"reason": "loop", 
@@ -357,7 +365,18 @@ def moveAndDel(url, reason):
     
     
     
-# this function updates the information of urls in the cached urls or in storage
+# input:
+#       - url: The url for which we want to update its entry in cachedUrls
+#       - parentUrl: The url from which we last fetched the current url (read it out of the content), or in case of (multiple)
+#       - info: the frontierDict[ur]- entry
+#       - score: The tueEngScore of the parentUrl
+# output:
+#       - returns True, if the cachedUrls- entry was changed and false, if it wasn't
+#
+#what this function does:
+# if updates the linkingDepth and the domainLinkingDepth, as well as the list of incoming urls
+# (urls which link to the current one), for more information see comments about the entries of the table urlsDB
+# in databaseManagement.py
 def updateInfo(url, parentUrl, info, score):
     from metric import metric
     # If there was indeed an entry for this url in cache or storage, 
@@ -405,8 +424,8 @@ def updateInfo(url, parentUrl, info, score):
         # cachedUrls[url] = info
     return updated
 
-        
-        
+
+# this function gets a maximal length 
 def lstAllDifferentDomains(maxLength):
     resultList = []
     domainList = []
@@ -420,15 +439,14 @@ def lstAllDifferentDomains(maxLength):
         t = time.time()
         if scheduled <= t and domain:
                 if domain not in domainList:
-                # not deleting the frontierDict[url] entry here , even though the frontier[url] entry does 
-                # not exist anymore in the frontier (because if was deleted by the pop-
-                # operation in the lstAllDifferentDomains ) means we have to be very careful to not forget
-                # to delete all entries of frontiderDict as well as soon as we son't need them anymore (see moveAndDel)
+        
                     resultList.append(url)
                     domainList.append(domain)
                     l += 1
                     
-                
+        # we add all items back to the frontier, even those we are now about to crawl (those in resultLst) 
+        # since otherwise it would break with our goal to delete entries from caches by deletion via
+        # moveAndDel only
         listOfPoppedItems.append((url, scheduled))
         
         

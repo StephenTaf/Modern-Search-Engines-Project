@@ -8,6 +8,18 @@ from csvToListOfStings import csvToStringList
 import helpers
 import main
 from frontierManagement import moveAndDel
+
+
+##############################################
+# This file is about dealing with the http- status- codes of the http- response
+# we get when requesting the resource belonging to the url
+##############################################
+
+
+
+
+
+
 # this might be the most complicated dictionary of the entire program, but is really useful to get insights
 # into which http- status- codes appeared for which url how many times and when or in which sequence they appeared for the domain
 # relevant (these are NOT all entries, but there are entries in responseHttpErrorTracker[domain] which are only used by UTEMA 

@@ -51,8 +51,8 @@ async def fetchSingleResponse(client,url):
             # doing this will save us 1 http- request per call of an url of a 
             # domain we called earlier on in the future -> major time- saving
             domain = helpers.getDomain(url)
-            if domain and domain in robotsTxtManagement.robotsTxtInfosInfos:
-                robot =  robotsTxtManagement.robotsTxtInfosInfos[domain]
+            if domain and domain in robotsTxtManagement.robotsTxtInfos:
+                robot =  robotsTxtManagement.robotsTxtInfos[domain]
             else:
                 robotResponse = await client.get(urljoin(url, "/robots.txt"))
                 robot = robotResponse.text
