@@ -118,7 +118,8 @@ def statusCodesHandler(url, location, code, info, retry, noHandleCodes=False):
         responseHttpErrorTracker[domain]["data"] += [(datetime.fromtimestamp(time_).isoformat(),code)]
         responseHttpErrorTracker[domain]["data"] = responseHttpErrorTracker[domain]["data"][-100:]     
     else:
-        
+        responseHttpErrorTracker[domain]["data"] += [(datetime.fromtimestamp(time_).isoformat(),"connection failed")]
+        responseHttpErrorTracker[domain]["data"] = responseHttpErrorTracker[domain]["data"][-100:]    
         if "connection failed" not in responseHttpErrorTracker[domain]["urlData"][url]["counters"]:
             responseHttpErrorTracker[domain]["urlData"][url]["counters"] = {"connection failed": 0}
         else:
