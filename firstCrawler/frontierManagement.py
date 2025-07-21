@@ -5,8 +5,7 @@ import time
 import matplotlib.pyplot as plt
 import copy
 import asyncio
-from databaseManagement import (store, load, storeCache, findDisallowedUrl, readUrlInfo, printNumberOfUrlsStored 
-     ,updateTableEntry, closeCrawlerDB)
+from databaseManagement import findDisallowedUrl, readUrlInfo, updateTableEntry, getNumberOfUrlsStored
 import helpers
 import statusCodeManagement
 from robotsTxtManagement import robotsTxtCheck
@@ -236,7 +235,7 @@ def frontierRead(urlDict, info):
         info["domainLinkingDepth"] = frontierDict[url]["domainLinkingDepth"]
         
         info["tueEngScore"] = metric(info, url)
-        if info["tueEngScore"] >-0.1:
+        if info["tueEngScore"] >0.5:
             # Seemed like a good crawling- depth, but in gaining our url- Database we played 
             # around with this value, but this can be used as a good initial value, we think
             # since relevance to Tübingen and English seems to drop when moving further out either
@@ -285,6 +284,24 @@ def frontierInit(lst):
         frontierWrite(url,None,None,1)
         
         
+# this function is just used for printing useful statistics while the main.crawler- function is in progress (called every 10th
+# round of the crawling loop and then once after the loop stopped 
+def printInfo():
+    print(f"the actual number of cachedUrls: {len(cachedUrls)}")
+    print(f"the actual number of tracked websites (because of http- statuscode): {len(statusCodeManagement.responseHttpErrorTracker)}")
+    print(f"the size of the frontier: {len(frontier)}")
+    print(f"the actual number disallowedUrls: {len(disallowedURLCache)}")
+    print(f"the actual number disallowedDomains: {len(disallowedDomainsCache)}")
+    getNumberOfUrlsStored(printNumber=True)
+    for index in range(min(10, len(frontier)-1)):
+                if frontier != []:
+                    url = list(frontier)[-(index-1)]
+                    if helpers.getDomain(url) in statusCodeManagement.responseHttpErrorTracker:
+                        print(f'''In the domain {helpers.getDomain(url)} these were the last status_codes at the times: {[a[1] for a in statusCodeManagement.responseHttpErrorTracker[helpers.getDomain(url)]["data"]]}''')
+                        print("--------------------------")
+    print("---------------------------------------------------")
+    
+           
         
         
         

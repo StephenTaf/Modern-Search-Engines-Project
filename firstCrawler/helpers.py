@@ -1,44 +1,18 @@
 import re
 from bs4 import BeautifulSoup
-import requests
-import lxml
 import re
 import warnings
-
-
-
-#%%%%%%%%%%%%%%%%%%%%%%%%%%%
-import random
-import requests
 from requests.adapters import HTTPAdapter
 import bisect #module for binary search
-import time
 import matplotlib.pyplot as plt
-import numpy as np
-import math
-import copy
 import re
 from datetime import datetime, timezone
 from dateutil.parser import parse
-from urllib.parse import urljoin, urlparse
-from UTEMA import UTEMA
-from heapdict import heapdict
-import threading 
-import duckdb
-from pympler import asizeof
+from urllib.parse import urljoin
 import html
 from seed import Seed as seed
-from exportCsv import export_to_csv as expCsv 
-from csvToListOfStings import csvToStringList
 from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
-from multiprocessing import Process
-import queue
-import sys
-import os
-import httpx
-import asyncio
 import warnings
-import helpers
 
 
 ##############################################
@@ -188,7 +162,7 @@ def extractUrls(soup, base_url,):
     urls = [html.unescape(u) for u in urls]
     # we don't wanit urls linking to sitemaps, because we decided to 
     # crawl site- structure aware (we store the depth of a link inside a site in cachedUrls[url]["linkingDepth"])
-    finalUrls = [url for url in urls if not helpers.isSitemapUrl(url)]
+    finalUrls = [url for url in urls if not isSitemapUrl(url)]
     return finalUrls
 
 # used to extract from a given text_ and content type (the content type as stated in the body of the http- response of a url- request)

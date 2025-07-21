@@ -463,10 +463,17 @@ def load():
             disallowedDomainsCache, responseHttpErrorTracker)
     
 
-def printNumberOfUrlsStored():
+def getNumberOfUrlsStored(printNumber=False):
     global crawlerDB
-    '''prints the size of the current urlsDB- table'''
-    print(f'There are  {crawlerDB.execute("SELECT COUNT(*) FROM urlsDB").fetchone()} stored urls so far')   
+    '''prints the size of the current urlsDB- table, if printNumber = True, independant of that it returns the size'''
+    size = crawlerDB.execute("SELECT COUNT(*) FROM urlsDB").fetchone()[0]
+    if printNumber:
+        print(f'There are  {size} stored urls so far') 
+    return size  
+    
+    
+    
+    
     
     
 # note that columns is a string of form "column1, column2, column3..."

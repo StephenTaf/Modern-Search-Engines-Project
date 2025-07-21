@@ -305,6 +305,7 @@ def handleCodes(url, code, location, info):
         if counter == 3:
               moveAndDel(url, "counter")
         sample = 0.4
+        exponentialDelay(url, info)
     if url in responseHttpErrorTracker[domain]:
         
         # max UTEMA - average (weighted average) of bad requests we

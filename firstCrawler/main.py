@@ -1,17 +1,16 @@
-
-import databaseManagement
 from requests.adapters import HTTPAdapter
 import time
 import matplotlib.pyplot as plt
 from heapdict import heapdict
 import threading 
-from databaseManagement import (store, load, storeCache, findDisallowedUrl, readUrlInfo, printNumberOfUrlsStored 
-     ,updateTableEntry, closeCrawlerDB)
+from databaseManagement import store, load, storeCache, getNumberOfUrlsStored, closeCrawlerDB
 import helpers
-from frontierManagement import frontierInit, manageFrontierRead
+from frontierManagement import frontierInit, manageFrontierRead, printInfo
 import frontierManagement
 import statusCodeManagement
-# in order to be able to raise customed- errors
+import seed
+
+# in order to be able to raise customed- error- messages we use this class
 class Error(Exception):
     pass
 
@@ -48,24 +47,7 @@ def inputReaction():
     
     
     
-# this function is just used for printing useful statistics while the crawler- function is in progress (called every 10th
-# round of the crawling loop and then once after the loop stopped 
-def printInfo():
-    print(f"the actual number of cachedUrls: {len(frontierManagement.cachedUrls)}")
-    print(f"the actual number of tracked websites (because of http- statuscode): {len(statusCodeManagement.responseHttpErrorTracker)}")
-    print(f"the size of the frontier: {len(frontierManagement.frontier)}")
-    print(f"the actual number disallowedUrls: {len(frontierManagement.disallowedURLCache)}")
-    print(f"the actual number disallowedDomains: {len(frontierManagement.disallowedDomainsCache)}")
-    printNumberOfUrlsStored()
-    for index in range(min(10, len(frontierManagement.frontier)-1)):
-                if frontierManagement.frontier != []:
-                    url = list(frontierManagement.frontier)[-(index-1)]
-                    if helpers.getDomain(url) in statusCodeManagement.responseHttpErrorTracker:
-                        print(f'''In the domain {helpers.getDomain(url)} these were the last status_codes at the times: {[a[1] for a in statusCodeManagement.responseHttpErrorTracker[helpers.getDomain(url)]["data"]]}''')
-                        print("--------------------------")
-    print("---------------------------------------------------")
-    
-    
+
     
 # input:
 #        - a list of urls whit which are used to initalise the frontierManagement.frontier
@@ -87,13 +69,14 @@ def crawler(lst):#inputThread):
     frontierManagement.disallowedURLCache, frontierManagement.disallowedDomainsCache, statusCodeManagement.responseHttpErrorTracker) = load()
     frontierInit(lst)
     counter = 0
-    
+    # just used for a nice print after the while- loop ends
+    numberOfStoredUrlsAtStart = getNumberOfUrlsStored()
     # starts the inputReaction- thread
     threading.Thread(target=inputReaction, daemon=True).start()
     
     l = len(frontierManagement.frontier)
-    
-    print("Initial l =", l)
+    timeStart = time.time()
+    # print("Initial l =", l)
     print("stopEvent.is_set() =", stopEvent.is_set())
     while l !=0 and not stopEvent.is_set():
         # IMPORTANT: Want to store the cachedURLs into the dabase, after a certain amount of entries are reached
@@ -119,6 +102,10 @@ def crawler(lst):#inputThread):
 
     # sets the stop -event in order to close the inputReaction thread by breaking the while- loop there as well        
     stopEvent.set()  
+    print("#####################")
+    print(f"After loading the caches the crawler worked {time.time() -timeStart} seconds an fetchted {getNumberOfUrlsStored()- numberOfStoredUrlsAtStart 
+                                                                                                      + len(frontierManagement.cachedUrls)} in this time" )
+    print("#####################")
     printInfo()
         
 
@@ -140,7 +127,7 @@ def runCrawler(lst):
 #%%
 #this was for my own test purposes
 #runCrawler(["rubbish"])
-runCrawler(["https://www.bristol.ac.uk", "https://www.cbsnews.com", "https://www.newyorker.com","https://www.visitsingapore.com"])
+runCrawler(seed.Seed)
 
 #runCrawler(["https://whatsdavedoing.com"])
 
