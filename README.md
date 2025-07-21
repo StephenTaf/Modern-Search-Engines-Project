@@ -73,8 +73,8 @@ Modern-Search-Engines-Project/
 │   └── Group Project Rules.ipynb  # Project guidelines
 │
 ├── Web Crawling
-│   └── MaxPart/crawler/
-│       ├── UTEMA.py          # Main crawler implementation
+│   └── crawler/
+│       ├── UTEMA.py          # crawler implementation
 │       ├── seed.py           # Seed URL definitions
 │       ├── metric.py         # Page quality scoring
 │       └── CrawlerHelpers.py # Utility functions
