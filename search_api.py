@@ -144,7 +144,6 @@ async def search():
             "llm_response": llm_response.get('response', ''),
             "documents": formatted_results,
         }
-        print(response['llm_response'])
         logging.info(f"Search completed for {query} in {time.time() - _tik:.2f} seconds")
         return jsonify(response)
 
@@ -217,8 +216,6 @@ async def batch_search():
         if not queries_file.exists():
             return jsonify({'error': 'queries.txt file not found'}), 404
             
-        if not retriever_instance:
-            return jsonify({'error': 'Search engine not initialized'}), 500
         
         # Read queries from file in the specified format: query_num<tab>query_text
         queries = []
@@ -252,12 +249,8 @@ async def batch_search():
                 processed_query = preprocess_query(query_text)
                 
                 # Get search results
-                results = retriever_instance.quick_search(
-                    processed_query, 
-                    top_k=cfg.TOP_K_RETRIEVAL,
-                    return_unique_docs=True
-                )
-                
+                results = bm_25.search(processed_query, top_k=cfg.TOP_K_RETRIEVAL)
+
                 if not results:
                     logging.info(f"No results found for query {query_num}: '{query_text}'")
                     return []
@@ -266,7 +259,7 @@ async def batch_search():
                 rerank_request_json = {
                     "doc_ids": [str(result['doc_id']) for result in results],
                     "query": processed_query,
-                    "similarities": [result['similarity'] for result in results],
+                    "similarities": [result['score'] for result in results],
                     "call_api": True
                 }
                 
@@ -294,7 +287,7 @@ async def batch_search():
                         'rank': rank,
                         'url': url,
                         'score': f"{score:.3f}",
-                        'formatted_line': f"{query_num}\t{rank}\t{url}\t{score:.3f}"
+                        'formatted_line': f"{query_num}\t{rank}\t{url}\t{score:.3f}" 
                     }
                     query_results.append(result_entry)
                 

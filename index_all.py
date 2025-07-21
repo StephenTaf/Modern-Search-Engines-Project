@@ -1,4 +1,4 @@
-from retriever import Retriever
+
 from indexer.bm25_indexer import BM25
 from indexer.embedder import TextEmbedder
 import config as cfg
@@ -29,29 +29,6 @@ def main():
     indexer_instance.index_documents(batch_size=cfg.DEFAULT_DB_FETCH_BATCH_SIZE, embedding_batch_size=cfg.DEFAULT_EMBEDDING_BATCH_SIZE,force_reindex=False) 
     logging.info(f"Document indexing completed successfully in {time.time() - _tik:.2f} seconds.")
     
-    
-    # Initialize the retriever
-    # retriever_instance = Retriever(embedder, indexer_instance, db_path)
-
-    
-    # print("\nSearch Engine Ready. Type your query (or 'exit' to quit):\n")
-    # while True:
-    #     query = input(">> ").strip()
-    #     if query.lower() in {"exit", "quit"}:
-    #         print("Exiting search engine.")
-    #         break
-    #     results = retriever_instance.quick_search(query, top_k=cfg.TOP_K_RETRIEVAL, return_unique_docs=True)
-    #     if not results:
-    #         print("No results found.")
-    #     else:
-    #         for i, result in enumerate(results, 1):
-                 
-    #             print(f"\n{i}. {result['title'][:50]} (Score: {result['similarity']:.3f})")
-    #             print(f"   URL: {result['url']}")
-    #             print(f"   Best chunk: {result['sentence'][:200]}...")
-    #             print(f"   Document ID: {result['doc_id']}")
-    #             print(f"   Text: {result['text'].replace('\n','')[:100]}...")
-
 
         
 if __name__ == "__main__":

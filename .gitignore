@@ -89,3 +89,7 @@ dist/
 *.parquet
 *.csv
 .DS_Store
+*.txt
+*.pickle
+*.par
+*.tsv

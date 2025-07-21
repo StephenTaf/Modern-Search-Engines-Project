@@ -2,7 +2,7 @@
 
 # HuggingFace Model Configuration
 huggingface:
-  model_name: "sentence-transformers/sentence-t5-base"
+  model_name: "as-bessonov/reranker_searchengines_cos2" # "sentence-transformers/sentence-t5-base"
 # Server Configuration
 server:
   host: "0.0.0.0"     # Server host (0.0.0.0 for all interfaces, 127.0.0.1 for localhost only)
@@ -19,14 +19,17 @@ file_processing:
 
 # Database Configuration
 database:
-  data_path: "crawlerDb.duckdb"
+  data_path: "crawler_new.db" #"crawlerDb_sbert.duckdb"
   # JSON file should contain list of dicts with fields: doc_id, sentence, title, url, text, similarity
 
 # Similarity Calculation
 similarity:
   metric: "cosine"  # Similarity metric (cosine, euclidean, etc.)
   batch_size: 32
-  smoothing: 0.0 # Smoothing factor for new similarity calculation (0.0 means take only new similarity)
+  smoothing: 0.15 # Smoothing factor for new similarity calculation (0.0 means take only new similarity)
+  diversification: True  # Whether to apply domain diversification to the results
+  top_k: 100  # Number of top results to return after reranking
+
 # Logging Configuration
 logging:
   level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL

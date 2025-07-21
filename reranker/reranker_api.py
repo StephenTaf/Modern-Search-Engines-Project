@@ -32,6 +32,7 @@ class Database:
         placeholders = ', '.join(['?'] * len(doc_ids))
         # Use GROUP BY url to get distinct URLs, normalizing URLs by removing query parameters
         # This treats URLs as the same if they only differ by query parameters (e.g., ?q=vf)
+        # Take max (first) 10 chunks per document for memory efficiency
         query = f"""
             WITH url_data AS (
                 SELECT CAST(MIN(id) AS TEXT) AS id, 
@@ -44,12 +45,17 @@ class Database:
                     WHEN INSTR(url, '?') > 0 THEN SUBSTR(url, 1, INSTR(url, '?') - 1)
                     ELSE url 
                 END
+            ),
+            ranked_chunks AS (
+                SELECT *, ROW_NUMBER() OVER(PARTITION BY doc_id) as rn
+                FROM chunks_optimized
             )
             
             SELECT ud.*, co.*, e.*
             FROM url_data ud
-            JOIN chunks_optimized co ON ud.id = co.doc_id
+            JOIN ranked_chunks co ON ud.id = co.doc_id
             JOIN embeddings e ON co.chunk_id = e.chunk_id
+            WHERE co.rn <= 10
             """
         
         results = self.vdb.execute(query, doc_ids).df()
@@ -280,6 +286,52 @@ def get_new_similarity(documents, query_embedding, batch_size: int) -> List[floa
         similarities.extend(batch_similarities)
     return similarities
 
+def normalise_similarities(similarities: List[float]) -> List[float]:
+    """Normalise similarity scores to a range of [0, 1]."""
+    min_sim = min(similarities)
+    max_sim = max(similarities)
+    if max_sim == min_sim:
+        # If all similarities are identical, avoid division by zero
+        return [0.0 for _ in similarities]
+    return [(sim - min_sim) / (max_sim - min_sim) for sim in similarities]
+
+
+def apply_positional_weighting(group):
+    """Apply positional weighting to the best chunk in each group.
+    Boosts the first chunk and decays the last chunk based on their positions.
+    idea: To boost a document if its first chunk (assumingly, with title) is the best one."""
+    # Sort chunks by chunk_id to get positional order
+    sorted_chunks = group.sort_values('chunk_id')
+    total_chunks = len(sorted_chunks)
+    if total_chunks == 1:
+        return group
+    # Find position of best chunk (0-indexed)
+    best_chunk_id = group.loc[group['new_similarity'].idxmax(), 'chunk_id']
+    position = sorted_chunks[sorted_chunks['chunk_id'] == best_chunk_id].index[0]
+    chunk_position = sorted_chunks.index.get_loc(position)
+    
+    # Calculate position ratio (0 = first chunk, 1 = last chunk)
+    position_ratio = chunk_position / max(1, total_chunks - 1) if total_chunks > 1 else 0
+    
+    # boost/decay parameters
+    max_boost = 0.1  # 10% boost for first chunk
+    max_decay = 0.05  # 5% decay for last chunk
+    
+    # Linear interpolation: first chunk gets boost, last chunk gets decay
+    position_adjustment = max_boost - (max_boost + max_decay) * position_ratio
+    
+    # Apply adjustment to the best chunk's similarity
+    best_idx = group['new_similarity'].idxmax()
+    original_sim = group.loc[best_idx, 'new_similarity']
+    adjusted_sim = original_sim + position_adjustment
+    
+    # Ensure similarity stays within valid bounds [0, 1]
+    adjusted_sim = max(0.0, min(1.0, adjusted_sim))
+    
+    # Update the similarity score
+    group.loc[best_idx, 'new_similarity'] = adjusted_sim
+    
+    return group
 
 @app.post("/rerank", response_model=RerankResponse)
 async def rerank(request: RerankRequest):
@@ -287,10 +339,11 @@ async def rerank(request: RerankRequest):
     Rerank documents based on similarity to query using sliding window approach.
     """
     try:
-        logger.info(f"Processing rerank request for doc_ids: {request.doc_ids} with similarities: {request.similarities}")
+        #logger.info(f"Processing rerank request for doc_ids: {request.doc_ids} with similarities: {request.similarities}")
         logger.info(f"Query: {request.query[:100]}{'...' if len(request.query) > 100 else ''}") 
+        TOP_K= config['similarity'].get('top_k', 100)  # Default to 100 if not specified in config
         # Get documents from database
-        documents = database.get_documents_by_ids(request.doc_ids) # pandas
+        documents = database.get_documents_by_ids(request.doc_ids) 
 
         if len(documents) == 0:
             raise HTTPException(status_code=401, detail="No documents found for the provided doc_ids")
@@ -299,39 +352,57 @@ async def rerank(request: RerankRequest):
         
         query_text = request.query
 
-        query_embedding = embedding_model.encode(query_text) # (769,)
+        query_embedding = embedding_model.encode(query_text) 
         # get old similarity as provided
         documents = documents.merge(pd.DataFrame({"doc_id":[int(d_id) for d_id in request.doc_ids], "old_similarity" : request.similarities}), on=['doc_id'])
         documents["new_similarity"] = get_new_similarity(documents, query_embedding, config['similarity']['batch_size'])
         # make smoothing
-        documents['new_similarity'] = documents['new_similarity'] * (1-config["similarity"]["smoothing"]) + documents['old_similarity'] * config["similarity"]["smoothing"]
+        documents['new_similarity'] = normalise_similarities(documents['new_similarity'].tolist())
+        documents['old_similarity'] = normalise_similarities(documents['old_similarity'].tolist())
+        documents['new_similarity'] = documents['new_similarity'] *(1-config["similarity"]["smoothing"]) + documents['old_similarity'] * config["similarity"]["smoothing"]
         documents = documents.reset_index(drop=True)
-        # create list of DocumentScore objects
 
-        idx = documents.groupby('doc_id')['new_similarity'].idxmax() # find most relevant windows in documents
+        
+        # Apply positional weighting to each document group
+        documents = documents.groupby('doc_id').apply(apply_positional_weighting).reset_index(drop=True)
+
+        # Calculate idx after positional adjustments
+        idx = documents.groupby('doc_id')['new_similarity'].idxmax()
         reranked_documents = documents.loc[idx, ['id', 'title', 'url', 'text', 'chunk_id', 'doc_id', 'chunk_text', 'new_similarity', 'old_similarity']]
-        # 
         reranked_documents = reranked_documents.sort_values(by="new_similarity", ascending=False).reset_index(drop=True)
         # below list is sorted!
-        document_scores = [
-            DocumentScore(
-                doc_id=str(doc['doc_id']),
-                title=doc['title'],
-                url=doc['url'],
-                similarity_score=doc['new_similarity'],
-                original_similarity=doc['old_similarity'],
-                most_relevant_window=WindowScore(
-                    text=doc['text'],
+        document_scores = []
+        
+        for i, doc in reranked_documents.iterrows():
+            try:
+                document_scores.append(
+                    DocumentScore(
+                        doc_id=str(doc['doc_id']),
+                        title=doc['title'],
+                        url=doc['url'],
                     similarity_score=doc['new_similarity'],
-                    doc_id=str(doc['doc_id']),
-                    title=doc['title'],
-                    window_index=doc['chunk_id']  # Assuming chunk_id is used as window index,
+                    original_similarity=doc['old_similarity'],
+                    most_relevant_window=WindowScore(
+                        text=doc['text'],
+                        similarity_score=doc['new_similarity'],
+                        doc_id=str(doc['doc_id']),
+                        title=doc['title'],
+                        window_index=doc['chunk_id']  
 
+                    )
                 )
-            ) for i, doc in reranked_documents.iterrows()
-        ]
-        TOP_K=100
-        reranked_docs = hybrid_diversification(document_scores, top_k=TOP_K)  # Apply hybrid diversification to the top 100 documents
+                )
+            except Exception as e:
+                logger.error(f"Error creating DocumentScore objects: {e}")
+                continue
+        
+        if config['similarity'].get('diversification', False):
+            logger.debug("Applying domain diversification to results")
+            reranked_docs = hybrid_diversification(document_scores, top_k=TOP_K)
+        else:
+            logger.debug("Skipping hybrid diversification, returning top results as is")
+            reranked_docs = document_scores[:TOP_K]
+       # reranked_docs = document_scores[:TOP_K]#hybrid_diversification(document_scores, top_k=TOP_K)  # Apply hybrid diversification to the top 100 documents
         logger.info(f"Reranking completed. Top document: {document_scores[0].doc_id} ({document_scores[0].similarity_score:.4f})")
         return RerankResponse(
             document_scores=reranked_docs,
@@ -489,4 +560,4 @@ if __name__ == "__main__":
         app, 
         host=config['server']['host'], 
         port=config['server']['port']
-    ) 
+    )
