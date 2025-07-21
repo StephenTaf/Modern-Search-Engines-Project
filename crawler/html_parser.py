@@ -121,7 +121,10 @@ def extractUrls(soup, base_url):
     for tag in soup.find_all("a", href=True):
         href = tag["href"]
         if href.startswith(("http", "/")):
-            urls.add(urljoin(base_url, href))
+            try:
+                urls.add(urljoin(base_url, href))
+            except:
+                pass
 
     # --- XML: link tags and enclosures ---
     for tag in soup.find_all(["link", "enclosure"]):
