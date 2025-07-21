@@ -198,7 +198,7 @@ curl -X POST http://localhost:5000/api/search \
       "score": 0.95,
       "title": "Document Title",
       "snippet": "Document snippet...",
-      "topic": "domain-topic",
+      "domain": "domain-topic",
       "doc_id": "document-id",
     }
   ]
