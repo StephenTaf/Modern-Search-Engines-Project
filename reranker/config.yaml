@@ -1,28 +1,8 @@
 # Document Reranker API Configuration
 
-# OpenAI API Configuration
-openai:
-  api_key: "" # Set your API key
-  embedding_model: "BAAI/bge-large-en-v1.5"  # OpenAI embedding model to use
-  batch_size: 50  # Number of texts to process in parallel. Now uses true batching - fewer API calls!
-  base_url: "https://api.together.xyz/v1"
-
 # HuggingFace Model Configuration
 huggingface:
-  model_name: "BAAI/bge-large-en-v1.5"  # HuggingFace tokenizer model
-  # Alternative options:
-  # model_name: "BAAI/bge-base-en-v1.5"
-  # model_name: "intfloat/multilingual-e5-large-instruct"
-  # model_name: "Alibaba-NLP/gte-modernbert-base"
-
-# Default Parameters for Sliding Windows
-sliding_window:
-  default_window_size: 500  # Default number of tokens per window
-  default_step_size: 400    # Default step size for sliding windows
-  default_top_n: 100         # Default number of top windows to return
-  position_boost_decay: 0.1  # Decay factor for position-based boosting (higher = more decay)
-  max_windows_per_document: 50  # Maximum number of windows to consider per document, optional limit to avoid excessive processing of large documents
-
+  model_name: "as-bessonov/reranker_searchengines_cos2" # "sentence-transformers/sentence-t5-base"
 # Server Configuration
 server:
   host: "0.0.0.0"     # Server host (0.0.0.0 for all interfaces, 127.0.0.1 for localhost only)
@@ -39,28 +19,21 @@ file_processing:
 
 # Database Configuration
 database:
-  data_path: "crawlerDb.duckdb"
+  data_path: "crawler_new.db" #"crawlerDb_sbert.duckdb"
   # JSON file should contain list of dicts with fields: doc_id, sentence, title, url, text, similarity
 
 # Similarity Calculation
 similarity:
   metric: "cosine"  # Similarity metric (cosine, euclidean, etc.)
-  
+  batch_size: 32
+  smoothing: 0.15 # Smoothing factor for new similarity calculation (0.0 means take only new similarity)
+  diversification: True  # Whether to apply domain diversification to the results
+  top_k: 100  # Number of top results to return after reranking
+
 # Logging Configuration
 logging:
   level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-
-# Performance Settings
-performance:
-  max_concurrent_files: 100    # Maximum number of files to process concurrently
-  timeout_seconds: 300        # Request timeout in seconds
-  memory_limit_mb: 2048       # Memory limit in MB (optional)
-
-# API Rate Limiting (optional)
-rate_limiting:
-  enabled: true               # Enable/disable rate limiting
-  requests_per_minute: 2400   # Max API requests per minute (with batching, actual requests are much fewer)
   
 # Cache Settings (for future implementation)
 cache:

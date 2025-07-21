@@ -10,18 +10,18 @@ This project is our coursework submission for the Modern Search Engines course a
 ## Key Features
 
 - **Web Crawling**: Discovers and crawls English content about Tübingen starting from manually curated seed
-- **Semantic Search**: Uses neural embeddings to understand query intent and context
-- **Fast Vector Search**: DuckDB with HNSW indexing for fast retrieval
+- **Lexical Search**: Uses BM25 scores to quickly filter the most relevant documents
+- **Semantic Search**: Reranks the results from BM25 retrieval with nural embeddings for better search ranking
 - **Interactive Visualization**: D3.js bubble interface for exploring search results
 - **Data Processing Pipeline**: Handles duplicate detection, language filtering, and content preprocessing
-- **Reranking**: Advanced fine-tuning of search results using OpenAI embeddings via sliding window analysis
+- **Search Overview**: Uses an LLM to generate a structures response based on top results
 
 ## How It Works
 
 ### The Big Picture
 
 ```
-Web Content → Crawler → Data Processing → Indexing → Search Interface
+Web Content -> Crawler -> Data Processing -> Indexing -> Search Interface
 ```
 
 ### Detailed Pipeline
@@ -38,15 +38,19 @@ Web Content → Crawler → Data Processing → Indexing → Search Interface
 - Preprocesses text for optimal indexing
 
 **3. Indexing**
-- Splits documents into overlapping chunks (256 tokens with 200-token steps)
-- Generates 384-dimensional embeddings using Sentence Transformers
-- Stores vectors in DuckDB with HNSW indexing for fast retrieval
+- Stores two complementary indexes for hybrid search:
+  - **BM25 Index**: Traditional lexical search index for fast keyword-based retrieval
+  - **Neural Index**: Uses sliding window approach - splits documents into overlapping chunks (512 tokens with 450-token steps)
+- Generates 768-dimensional embeddings using Sentence Transformers 
+- Stores BM25 stats as well as embedding vectors in DuckDB for persistence and fast retrieval
 
 **4. Search & Ranking**
-- Embeds user queries using the same model
-- Performs approximate nearest neighbor search
-- Aggregates chunk scores by document
-- Reranks results using OpenAI's embedding API with sliding window analysis for superior relevance
+- Uses a two-stage hybrid approach for optimal relevance:
+  - **Stage 1**: BM25 lexical search retrieves initial candidate documents
+  - **Stage 2**: Neural reranking using locally stored embeddings (generated during indexing with Sentence Transformers)
+- Embeds user queries and computes similarity against pre-computed document chunk embeddings stored in DuckDB
+- Aggregates chunk scores by document using max-pooling
+- Final ranking combines lexical and semantic signals for superior relevance
 
 ## Project Structure
 
@@ -63,7 +67,7 @@ Modern-Search-Engines-Project/
 │   └── indexer/
 │       ├── indexer.py         # Document processing and storage
 │       ├── embedder.py        # Text embedding generation
-│       └── bm25.py           # Traditional BM25 scoring (optional)
+│       └── bm25_indexer.py    # BM25 indexing and scoring
 │
 ├── Data Processing
 │   ├── preprocessor.ipynb     # Data cleaning and merging
@@ -93,7 +97,7 @@ Modern-Search-Engines-Project/
 │       └── main.py           # LLM-powered summarisation
 │
 └── Data Storage
-    ├── crawlerDb.duckdb      # Main document database
+    ├── crawlerDb_sbert.duckdb      # Main document database
     ├── crawler_v*.db         # Crawling session databases
 ```
 
@@ -102,7 +106,7 @@ Modern-Search-Engines-Project/
 ### Prerequisites
 
 **Required Dataset**
-You need a crawled dataset stored in a DuckDB file named `crawlerDb.duckdb` (default). This file should contain a `urlsDB` table with at least the following fields:
+You need a crawled dataset stored in a DuckDB file named `crawlerDb_sbert.duckdb` (default). This file should contain a `urlsDB` table with at least the following fields:
 - `id` - Unique document identifier
 - `url` - Source URL of the document
 - `title` - Document title
@@ -127,7 +131,6 @@ pip install -r requirements.txt
 **Prerequisites: Start Required Services**
 ```bash
 # Start Reranker service API
-# First, configure your OpenAI API key in reranker/config.yaml. To get a free API key, sign up here: https://api.together.ai/
 cd reranker/
 python reranker_api.py
 
@@ -136,8 +139,6 @@ python reranker_api.py
 cd search_assistant/
 python main.py  
 
-# In a new terminal, start the main search API
-python search_api.py
 ```
 
 **Option 1: Web Interface (Recommended)**
@@ -152,7 +153,7 @@ Then open http://localhost:5000 in your browser.
 # First, run the data preprocessing if you have multiple raw crawl data (optional)
 jupyter notebook preprocessor.ipynb
 
-# Then index all documents
+# Then index all documents (BM25 + sentence transformers embeddings)
 python index_all.py
 
 # Start the reranker service
@@ -200,9 +201,6 @@ curl -X POST http://localhost:5000/api/search \
       "snippet": "Document snippet...",
       "topic": "domain-topic",
       "doc_id": "document-id",
-      "topics": ["domain-topic"], # not used
-      "primaryTopic": "domain-topic", # not used
-      "secondaryTopics": [] # not used
     }
   ]
 }
@@ -248,21 +246,21 @@ Key settings in `config.py`:
 
 ```python
 # Embedding model and dimensions
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"  # Sentence transformer model
-EMBEDDING_DIMENSION = 384             # Vector dimension
+EMBEDDING_MODEL = "as-bessonov/reranker_searchengines_cos2"  # Sentence transformer model, self trained
+EMBEDDING_DIMENSION = 768            # Vector dimension
 
 # Database paths
-DB_PATH = "crawlerDb.duckdb"          # Main database
+DB_PATH = "crawlerDb_sbert.duckdb"          # Main database
 DB_TABLE = "urlsDB"                   # Document table
 
 # Processing parameters
-DEFAULT_WINDOW_SIZE = 256             # Text chunk size (tokens)
-DEFAULT_STEP_SIZE = 200               # Sliding window step
+DEFAULT_WINDOW_SIZE = 512             # Text chunk size (tokens)
+DEFAULT_STEP_SIZE = 450               # Sliding window step
 DEFAULT_EMBEDDING_BATCH_SIZE = 64     # Embedding batch size
 
 # Search settings
-TOP_K_RETRIEVAL = 200                 # Initial retrieval count
-MAX_CANDIDATES = 1000                 # Maximum chunks to fetch using ANN
+TOP_K_RETRIEVAL = 1000                 # Initial retrieval count from BM25
+
 
 # Reranking settings
 RERANKER_API_URL = "http://localhost:8000"  # Reranker service URL
@@ -271,24 +269,23 @@ RERANKER_TIMEOUT = 100                # Timeout for reranker API requests
 # LLM Assistant settings
 LLM_API_URL = "http://localhost:1984"     # Search assistant (LLM Summarization) API URL
 LLM_TIMEOUT = 30                           # Timeout for LLM API requests
-LLM_MAX_WINDOWS = 5                        # Maximum content windows to pass to LLM processing
+LLM_MAX_WINDOWS = 10                        # Maximum content windows to pass to LLM processing
 ```
 
 ## Technical Details
 
 ### Text Processing
-- **Chunking**: Overlapping windows to preserve context across boundaries
+- **Chunking**: Overlapping windows (512 tokens with 450-token steps) to preserve context across boundaries
 - **Language Detection**: Filters for English content using langdetect and polyglot
 - **Deduplication**: URL normalization to remove duplicate pages
 
-
-### Vector Search & Reranking
-- **Initial Retrieval**: all-MiniLM-L6-v2 (384 dimensions, good balance of speed/quality)
-- **Index**: DuckDB's native HNSW implementation  
-- **Similarity**: Cosine similarity for semantic matching
+### Hybrid Search & Reranking
+- **Initial Retrieval**: BM25 lexical search for fast keyword-based document retrieval
+- **Embeddings**: 768-dimensional vectors using Sentence-T5-base model, stored in DuckDB
+- **Similarity**: Cosine similarity for semantic matching between query and document chunks
 - **Aggregation**: Max-pooling of chunk scores by document
-- **Reranking**: BAAI/bge-large-en-v1.5 via OpenAI API with sliding window analysis (500-token windows, 400-token step)
-- **Optimization**: Batched embeddings reduce API calls by up to 100x
+- **Reranking**: Uses locally stored embeddings from indexing process for semantic reranking
+- **Storage**: DuckDB with efficient vector operations for fast retrieval
 
 ### Performance
 - **Search Speed**: < 1min for typical queries
@@ -299,17 +296,17 @@ LLM_MAX_WINDOWS = 5                        # Maximum content windows to pass to 
 ## Architecture Components
 
 ### Two-Stage Ranking System
-Our search engine implements a sophisticated two-stage ranking approach:
+Our search engine implements a two-stage ranking approach:
 
-1. **Initial Retrieval**: Fast vector search using all-MiniLM-L6-v2 embeddings in DuckDB
-2. **Reranking**: Advanced semantic analysis using BAAI/bge-large-en-v1.5 via OpenAI API
+1. **Initial Retrieval**: Fast BM25 lexical search to retrieve candidate documents
+2. **Neural Reranking**: Semantic analysis using locally stored Sentence-T5 embeddings in DuckDB
 
 ### Reranking Service 
 The reranking service provides significant quality improvements:
 
-- **Sliding Window Analysis**: Processes documents in 500-token windows with 400-token steps
-- **Batched Embeddings**: Reduces API calls by 10-100x through batching
-- **Enhanced Model**: Uses BAAI/bge-large-en-v1.5 for more nuanced semantic understanding
+- **Local Embeddings**: Uses pre-computed embeddings stored in DuckDB from the indexing process
+- **Sentence-T5 Model**: 768-dimensional embeddings for nuanced semantic understanding
+- **Sliding Window Analysis**: Processes documents in overlapping chunks for comprehensive coverage
 - **FastAPI Service**: Runs as a separate service on port 8000
 
 To start the reranking service:
@@ -317,15 +314,6 @@ To start the reranking service:
 cd reranker/
 python reranker_api.py
 ```
-
-### BM25 Fallback
-While the system primarily uses neural embeddings, you can enable traditional BM25 scoring:
-
-```python
-# In config.py
-USE_BM25 = True
-```
-
 
 
 *Built for the Modern Search Engines course at the University of Tübingen*

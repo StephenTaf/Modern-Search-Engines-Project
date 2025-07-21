@@ -1,16 +1,17 @@
-EMBEDDING_MODEL = "all-MiniLM-L6-v2" # Default embedding model
-EMBEDDING_DIMENSION = 384  # Dimension of the embeddings
+EMBEDDING_MODEL = "as-bessonov/reranker_searchengines_cos2"# Default embedding model, self trained
+EMBEDDING_DIMENSION = 768  # Dimension of the embeddings
 MIN_SENTENCE_LENGTH = 5  # Minimum length of sentences to consider
-DB_PATH = "crawlerDb.duckdb"  # Path to the DuckDB database
+DB_PATH = "crawler_new.db"   # Path to the DuckDB database
 DB_TABLE = "urlsDB"  # Table name in the DuckDB database
+
+DEFAULT_DB_FETCH_BATCH_SIZE_FOR_BM25 = 5000  # Default batch size for fetching documents for BM25
 
 DEFAULT_EMBEDDING_BATCH_SIZE = 64  # Default batch size for embeddings
 DEFAULT_DB_FETCH_BATCH_SIZE = 256  # Default batch size for fetching documents from database
-MAX_CANDIDATES = 1000  # Maximum candidates for hybrid search
-DEFAULT_WINDOW_SIZE = 256  # Default window size for sliding windows
-DEFAULT_STEP_SIZE = 200  # Default step size for sliding windows
+DEFAULT_WINDOW_SIZE = 512  # Default window size for sliding windows
+DEFAULT_STEP_SIZE = 450  # Default step size for sliding windows
 
-TOP_K_RETRIEVAL = 200  # Default number of top results to return in retrieval
+TOP_K_RETRIEVAL = 1000  # Default number of top results to return in retrieval
 TOP_K_RERANKING = 100  # Default number of top results to return in reranking
 
 # Reranker API Configuration
@@ -21,4 +22,4 @@ LLM_API_URL = "http://localhost:1984/generate_summary"  # URL for the LLM API
 LLM_TIMEOUT = 200  # Timeout for LLM API requests in seconds
 LLM_MAX_WINDOWS = 10  # Maximum number of windows to process in LLM API
 
-USE_BM25 = False  # Whether to use BM25 for indexing, we do not use it anymore
+USE_BM25 = True  # Whether to use BM25 for indexing, 

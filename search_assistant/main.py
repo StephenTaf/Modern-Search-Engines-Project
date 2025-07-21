@@ -44,7 +44,7 @@ async def generate_summary(request: LLMRequest):
         LLMResponse: Contains the generated summary response
     """
     try:
-        context = "\n\n".join([f"Text Window {i+1}:\n{window}" 
+        context = "\n\n".join([f"Text Window {i+1}:\n{window[:4000]}" 
                               for i, window in enumerate(request.most_relevant_windows)])
         system_prompt = config["system_prompt"].format(
             text_windows=context

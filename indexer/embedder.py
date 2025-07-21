@@ -50,12 +50,7 @@ class TextEmbedder:
                 embedding FLOAT[{cfg.EMBEDDING_DIMENSION}],
                 );
             """)
-        self.vdb.execute(f"""
-                         INSTALL vss;
-                          LOAD vss;
-                          SET hnsw_enable_experimental_persistence = true;
-
-                        """)
+ 
         def _embed(chunk: str):
             """
             Embed a single chunk using the embedding model.
@@ -65,14 +60,7 @@ class TextEmbedder:
             
         self.vdb.create_function("embed", _embed, [VARCHAR], f'FLOAT[{cfg.EMBEDDING_DIMENSION}]') 
     
-    def create_index(self):
-        """
-        Create the vector index for embeddings. Helps with ANN search.
-        """
-        self.vdb.execute("""
-            CREATE INDEX IF NOT EXISTS ip_idx ON embeddings USING HNSW (embedding)
-                        WITH (metric = 'ip');
-        """)
+  
     
     def create_sliding_windows(self, text: str, window_size: int, step_size: int) -> List[List[int]]:
         tokens = self.embedding_model.tokenizer.encode(text, add_special_tokens=False)
