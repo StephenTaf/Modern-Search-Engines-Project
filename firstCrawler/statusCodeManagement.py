@@ -270,8 +270,9 @@ def handleCodes(url, code, location, info):
             
         sample = 1
             
-    # this is the case if the server is overloaded    
-    elif code == 429: 
+    # this is the case if the server is overloaded, or in case of 999, it is a general 
+    # non- official backoff- code which should be respected by crawlers    
+    elif code == 429 or code == 999: 
         exponentialDelay(url, info)
         
         if counter == 10:

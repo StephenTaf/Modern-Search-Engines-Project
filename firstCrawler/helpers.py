@@ -1,18 +1,9 @@
 import re
-from bs4 import BeautifulSoup
-import re
-import warnings
-from requests.adapters import HTTPAdapter
 import bisect #module for binary search
 import matplotlib.pyplot as plt
 import re
-from datetime import datetime, timezone
+from datetime import  timezone
 from dateutil.parser import parse
-from urllib.parse import urljoin
-import html
-from seed import Seed as seed
-from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
-import warnings
 
 
 ##############################################
@@ -123,80 +114,41 @@ def retry(value):
             
     return value
 
-      #------------
-# given the body of a html - page (i.e. the requests(url.text)) as a beautiful soup- structure
-# (not the text- body of an error- http - response (a response with code not of form 2.xx)),
-# we extract all the meaningful (clickable) urls we can find from this soup
-#input:
-#       - soup: The soup structure that beatiful soupe produces
-#       - base_url: needed in order to calculate the full url for the output- list, in case the given urls are only relative
-#output:
-#       - a list of the urls that were found
-# chatGPT wrote some parts of this: Pro: also works with xml, which the former function (commented out) does not
-def extractUrls(soup, base_url,):
-    '''extracts the urls from the given soup, if there are any clickkable ones'''
 
-    urls = set()
-    
-    if not soup:
-        return []
 
-    # --- HTML: clickable hrefs ---
-    for tag in soup.find_all("a", href=True):
-        href = tag["href"]
-        if href.startswith(("http", "/")):
-            urls.add(urljoin(base_url, href))
 
-    # --- XML: link tags and enclosures ---
-    for tag in soup.find_all(["link", "enclosure"]):
-        # Handle both: <link href="..."/> and <link>https://...</link>
-        url = tag.get("href") or tag.get("url") or tag.string
-        if url and url.strip().startswith(("http", "/")):
-            try:
-                urls.add(urljoin(base_url, url.strip()))
+# # used to extract from a given text_ and content type (the content type as stated in the body of the http- response of a url- request)
+# # as well as the urls from the given text
+# # , if the contentType is either html or xml, it returns  the human- readible content (text) and the title, as well as 
+# # the for our purpose relevant urls of this page (the clickable ones) as a tuple (text, title, urlList).
+# def parseTextAndFetchUrls(text_, contentType, base_url):
+#     '''extracts text and title'''
+#     soup = None
+#     text = ""
+#     title = ""
+#     xmlContent = False
+#     htmlContent = False
 
-            except ValueError:
-                strangeUrls.append(url.strip())
-
-    # Unescape HTML entities (e.g. &amp;)
-    urls = [html.unescape(u) for u in urls]
-    # we don't wanit urls linking to sitemaps, because we decided to 
-    # crawl site- structure aware (we store the depth of a link inside a site in cachedUrls[url]["linkingDepth"])
-    finalUrls = [url for url in urls if not isSitemapUrl(url)]
-    return finalUrls
-
-# used to extract from a given text_ and content type (the content type as stated in the body of the http- response of a url- request)
-# as well as the urls from the given text
-# , if the contentType is either html or xml, it returns  the human- readible content (text) and the title, as well as 
-# the for our purpose relevant urls of this page (the clickable ones) as a tuple (text, title, urlList).
-def parseTextAndFetchUrls(text_, contentType, base_url):
-    '''extracts text and title'''
-    soup = None
-    text = ""
-    title = ""
-    xmlContent = False
-    htmlContent = False
-
-    if contentType:
-        xmlContent = "xml" in contentType
-        htmlContent = "html" in contentType
+#     if contentType:
+#         xmlContent = "xml" in contentType
+#         htmlContent = "html" in contentType
     
         
-    # this is in order for Beautiful soup not to give warnings, if the given text is neither xml nor html 
-    warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning)
-    if xmlContent or text_.strip().startswith("<?xml"):
-        soup = BeautifulSoup(text_, "xml")
-    elif htmlContent or "<html" in text_.lower():
-        soup = BeautifulSoup(text_, "html.parser")
+#     # this is in order for Beautiful soup not to give warnings, if the given text is neither xml nor html 
+#     warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning)
+#     if xmlContent or text_.strip().startswith("<?xml"):
+#         soup = BeautifulSoup(text_, "xml")
+#     elif htmlContent or "<html" in text_.lower():
+#         soup = BeautifulSoup(text_, "html.parser")
 
-    if soup:
-        #this part was written by ChatGPT
-        result = " ".join(
-            t.get_text(" ", strip=True)
-            for t in soup.find_all(["p", "h1", "h2", "h3", "h4", "h5", "h6", "article"])
-        )
-        if soup.title:
-            title = soup.title.string
-    urls = extractUrls(soup, base_url)   
+#     if soup:
+#         #this part was written by ChatGPT
+#         result = " ".join(
+#             t.get_text(" ", strip=True)
+#             for t in soup.find_all(["p", "h1", "h2", "h3", "h4", "h5", "h6", "article"])
+#         )
+#         if soup.title:
+#             title = soup.title.string
+#     urls = extractUrls(soup, base_url)   
     
-    return (text,title, urls)
+#     return (text,title, urls)

@@ -14,6 +14,7 @@ from statusCodeManagement import statusCodesHandler
 from urlRequestManagement import fetchResponses
 import statusCodeManagement
 import helpers
+from html_parser import parseTextAndFetchUrls
 
 ##############################################
 # This file is about dealing with the frontier (filling it, reading it out, extracting new urls, updating the caches if necessary)
@@ -225,7 +226,7 @@ def frontierRead(urlDict, info):
                             "incoming": [], "domainLinkingDepth":5, "linkingDepth": 50, "tueEngScore": 0.0}
             
         info = cachedUrls[url]
-        textTitleAndUrls = helpers.parseTextAndFetchUrls(rawText, contentType, url)
+        textTitleAndUrls = parseTextAndFetchUrls(rawText, url)
         info["title"] =textTitleAndUrls[1]
         text = textTitleAndUrls[0]
         info["text"] = text
@@ -286,7 +287,7 @@ def frontierInit(lst):
         
 # this function is just used for printing useful statistics while the main.crawler- function is in progress (called every 10th
 # round of the crawling loop and then once after the loop stopped 
-def printInfo():
+def printInfo(timeStart, numberOfStoredUrlsAtStart):
     print(f"the actual number of cachedUrls: {len(cachedUrls)}")
     print(f"the actual number of tracked websites (because of http- statuscode): {len(statusCodeManagement.responseHttpErrorTracker)}")
     print(f"the size of the frontier: {len(frontier)}")
@@ -299,6 +300,12 @@ def printInfo():
                     if helpers.getDomain(url) in statusCodeManagement.responseHttpErrorTracker:
                         print(f'''In the domain {helpers.getDomain(url)} these were the last status_codes at the times: {[a[1] for a in statusCodeManagement.responseHttpErrorTracker[helpers.getDomain(url)]["data"]]}''')
                         print("--------------------------")
+                        
+    print("#####################")
+    print(f"After loading the caches the crawler worked {time.time() -timeStart} seconds and fetched {getNumberOfUrlsStored()- numberOfStoredUrlsAtStart 
+                                                                                               + len(cachedUrls)} new Urls in this time" )
+    print("#####################")
+        
     print("---------------------------------------------------")
     
            

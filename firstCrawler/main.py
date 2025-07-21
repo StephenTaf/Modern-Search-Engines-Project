@@ -32,9 +32,9 @@ stopEvent = threading.Event()
 def inputReaction():
     '''if "stop" is entered, this will start the program- shutdown'''
     while not stopEvent.is_set():
-        print("[debug] Waiting for input...")
+        print("Waiting for input...")
         cmd = input()
-        print("[debug] Received input:", cmd)
+        print("[Received input:", cmd)
         if cmd == "stop":
             print("[shut- down in progress")
             # sets the stop- event in order to break this while- loop as well as the while- loop
@@ -76,13 +76,11 @@ def crawler(lst):#inputThread):
     
     l = len(frontierManagement.frontier)
     timeStart = time.time()
-    # print("Initial l =", l)
-    print("stopEvent.is_set() =", stopEvent.is_set())
+    
     while l !=0 and not stopEvent.is_set():
-        # IMPORTANT: Want to store the cachedURLs into the dabase, after a certain amount of entries are reached
-        # (currently 20 000, which should be doable by every system with 4GB RAM (still usable during it,
-        # takes accordig to chatGPT only 1 GB ram))
         if frontierManagement.frontier.peekitem()[1] < time.time():
+        # IMPORTANT: Want to store the cachedURLs into the dabase, after a certain amount of entries are reached
+        # (currently 1000)
             storeCache(frontierManagement.cachedUrls)
             lastCachedUrl = manageFrontierRead()
             counter +=1
@@ -98,16 +96,13 @@ def crawler(lst):#inputThread):
     
         if counter % 10 == 0:
             counter = 0
-            printInfo()
+            printInfo(timeStart,numberOfStoredUrlsAtStart)
 
     # sets the stop -event in order to close the inputReaction thread by breaking the while- loop there as well        
     stopEvent.set()  
-    print("#####################")
-    print(f"After loading the caches the crawler worked {time.time() -timeStart} seconds an fetchted {getNumberOfUrlsStored()- numberOfStoredUrlsAtStart 
-                                                                                                      + len(frontierManagement.cachedUrls)} in this time" )
-    print("#####################")
-    printInfo()
-        
+    
+    printInfo(timeStart,numberOfStoredUrlsAtStart)
+
 
     store(frontierManagement.frontier, frontierManagement.frontierDict, frontierManagement.domainDelaysFrontier, frontierManagement.disallowedURLCache, 
           frontierManagement.disallowedDomainsCache, frontierManagement.cachedUrls, helpers.strangeUrls,
