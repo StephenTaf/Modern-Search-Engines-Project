@@ -96,7 +96,7 @@ Modern-Search-Engines-Project/
 │       └── main.py           # LLM-powered summarisation
 │
 └── Data Storage
-    ├── crawlerDb_sbert.duckdb      # Main document database
+    ├── crawlerDb.db          # Main document database
     ├── crawler_v*.db         # Crawling session databases
 ```
 
