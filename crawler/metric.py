@@ -3,19 +3,19 @@ import math
 from langdetect import detect
 from databaseManagement import readUrlInfo
 from tuebingen_terms import (
-    TUEBINGEN_PHRASES, CITY_TERMS, UNIVERSITY_TERMS, FACULTY_TERMS, ACADEMIC_TERMS)
-from CrawlerHelpers import cachedUrls
+    TUEBINGEN_PHRASES, CITY_TERMS, UNIVERSITY_TERMS, FACULTY_TERMS, ACADEMIC_TERMS) 
 def incomingScore(incomingLinks):
     """
     Sum of tueEngScores of all incoming links.
     Each element in incomingLinks is a pair: (url, score) or (url, _).
     If score is not available, try to fetch from urlFrontier.
     """
+    import frontierManagement
     total = 0.0
     for link in incomingLinks:
         url = link[0]
         score = link[1] if len(link) > 1 and link[1] is not None else \
-            (readUrlInfo(cachedUrls, delete=False)["tueEngScore"] if readUrlInfo(cachedUrls,url) else 0.0)
+            (readUrlInfo(frontierManagement.cachedUrls, delete=False)["tueEngScore"] if readUrlInfo(frontierManagement.cachedUrls,url) else 0.0)
         total += score
     return total
 
@@ -157,11 +157,12 @@ def metric(information, url):
 # through a lot of links on the same domain, and we were unsure that the website really relates to Tübingen and is in english, then this website very likely is not
 # relevant to our database). Note that the way the linking-depth is defined (the minimum of chained links on the same domain to reach the page) it cannot be approximated at runtime. Therefore we need to do this post- processing
 
-
+# this we never used in the end, but it was a nice idea!
 def OfflineMetric(information):
     """
     Post-processing metric for final page relevance after crawling is complete.
     """
+    
     url = information["url"]
     text = information["text"]
     incoming = information["incoming"]

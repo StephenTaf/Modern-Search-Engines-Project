@@ -6,7 +6,6 @@ import copy
 from heapdict import heapdict
 from collections.abc import Iterable
 
-
 # in order to be able to raise customed- errors
 class Error(Exception):
     pass
@@ -118,7 +117,7 @@ crawlerDB.execute("""
         
         --  this is information about the time and kind of the last 100 http_status codes received for that domain
         -- it is stored as a list of tuples of the form (<status_code, time received), where the time has the format DD: MM: YYYY
-        -- and it is regarding the local time- zone
+        -- and it is regarding the local time- zone, it is json.dumps- encoded as a string
         data TEXT)
     """)
 
@@ -132,7 +131,8 @@ crawlerDB.execute("""
         -- the json.dumps- compressed content of responseHTTpErrorTracker[domain][data]
         data TEXT,
         
-        -- the json.dumps- compressed content of responseHTTpErrorTracker[domain]["urlData"]
+        -- the json.dumps-
+        -- encoded content of responseHTTpErrorTracker[domain]["urlData"]
         urlData TEXT)
     """)
 
@@ -304,8 +304,9 @@ def readTable(table, field, columns = "", identifier =[]):
         print("Why is the id in here")  
     return resultDict
         
-# updates the value in the row where column identifier[0] matches with value identifier[1]
+        
 def updateTableEntry(tableName, updates, identifier):
+    ''' updates the value in the row of the table with name tableName where column identifier[0] matches with value identifier[1] '''
     global crawlerDB
     updatedValues = [updates[a] for a in updates]
     for index in range(len(updatedValues)):
@@ -383,6 +384,7 @@ def  readUrlInfo(cachedUrls, url, delete=False):
 # into structures of the type of emptyStructure with fields of the form {name: <data for someName}
 # we use it for structures of type heapDict and dict
 def convertDict(emptyStructure, dict_):
+    '''converts a dictonary with only one entry into another dictionary'''
     resultDict = emptyStructure
     if dict_:
         fieldName = next(iter(next(iter(dict_.values())).keys()))
@@ -391,7 +393,7 @@ def convertDict(emptyStructure, dict_):
     return resultDict
 
 # loads the stored frontier-table values into the frontier, the frontierDict, as well as the domainDelays values into the domainDelaysFrontier
-def loadFrontier(frontier, frontierDict, domainDelaysFrontier):
+def loadFrontier():
     '''loads the stored frontier-table values into the frontier, the frontierDict, as well as the domainDelays values into the domainDelaysFrontier'''
     frontier = readTable("frontier", "url", columns= ["schedule"])
     frontier = convertDict(heapdict(), frontier)
@@ -404,6 +406,7 @@ def loadFrontier(frontier, frontierDict, domainDelaysFrontier):
     return frontier, frontierDict, domainDelaysFrontier
 
 def findDisallowedUrl(url, disallowedDomainsCache, disallowedURLCache):
+    '''checks if the url is disallowed (in disallowedDomainsCache, or disallowedURLCache), and if yes, it returns True, else it returns false'''
     domain = helpers.getDomain(url)
     
     if not domain:
@@ -434,18 +437,19 @@ def store(frontier, frontierDict, domainDelaysFrontier, disallowedURLCache, disa
     # urls together with some information into csv documents
     saveAsCsv("frontier", "id, schedule, delay, url",10)
     saveAsCsv("urlsDB", "url, lastFetch, tueEngScore",100)
-    
+
+# this is used int the main of the crawler to close the crawler    
 def closeCrawlerDB():
     global crawlerDB
     crawlerDB.close()
 
 
-def load(frontier, frontierDict, domainDelaysFrontier, disallowedURLCache, disallowedDomainsCache, cachedUrls, 
-          strangeUrls, responseHttpErrorTracker):
+def load():
+    import frontierManagement
     global crawlerDB
     crawlerDB = duckdb.connect("crawlerDB.duckdb")
     '''loads all the tables entries into the caches (from storage to memory)'''
-    frontier, frontierDict, domainDelaysFrontier = loadFrontier(frontier, frontierDict, domainDelaysFrontier)
+    frontier, frontierDict, domainDelaysFrontier = loadFrontier()
     
     # load the disallowed Domains and Urls
     disallowedURLCache = readTable("disallowedUrls", "url")
@@ -456,13 +460,20 @@ def load(frontier, frontierDict, domainDelaysFrontier, disallowedURLCache, disal
     responseHttpErrorTracker = readTable("errorStorage","domain")
     
     return (frontier, frontierDict, domainDelaysFrontier, disallowedURLCache, 
-            disallowedDomainsCache, cachedUrls, strangeUrls, responseHttpErrorTracker)
+            disallowedDomainsCache, responseHttpErrorTracker)
     
 
-def printNumberOfUrlsStored():
+def getNumberOfUrlsStored(printNumber=False):
     global crawlerDB
-    '''prints the size of the current urlsDB- table'''
-    print(f'There are  {crawlerDB.execute("SELECT COUNT(*) FROM urlsDB").fetchone()} stored urls so far')   
+    '''prints the size of the current urlsDB- table, if printNumber = True, independant of that it returns the size'''
+    size = crawlerDB.execute("SELECT COUNT(*) FROM urlsDB").fetchone()[0]
+    if printNumber:
+        print(f'There are  {size} stored urls so far') 
+    return size  
+    
+    
+    
+    
     
     
 # note that columns is a string of form "column1, column2, column3..."

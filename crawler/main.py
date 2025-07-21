@@ -1,237 +1,139 @@
-#!/usr/bin/env python3
-"""CLI for the Tübingen crawler."""
+from requests.adapters import HTTPAdapter
+import time
+import matplotlib.pyplot as plt
+from heapdict import heapdict
+import threading 
+from databaseManagement import store, load, storeCache, getNumberOfUrlsStored, closeCrawlerDB
+import helpers
+from frontierManagement import frontierInit, manageFrontierRead, printInfo
+import frontierManagement
+import statusCodeManagement
+import seed
 
-import argparse
-import sys
-from typing import List
-
-from .config import CrawlerConfig, DEFAULT_SEED_URLS
-from .crawler import TuebingenCrawler
-
-
-def parse_arguments() -> argparse.Namespace:
-    """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(
-        description="Tübingen web crawler",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python -m crawler.main                           # Run with automatic state loading
-  python -m crawler.main --seeds url1 url2        # Custom seed URLs
-  python -m crawler.main --max-pages 50           # Limit pages per batch
-  python -m crawler.main --timeout 10             # Set request timeout
-  python -m crawler.main --fresh-start            # Start fresh (ignore previous state)
-  python -m crawler.main --clear-state            # Clear previous state and exit
-  python -m crawler.main --multiprocessing        # Enable multiprocessing (4 workers)
-  python -m crawler.main --multiprocessing --max-workers 8 --domain-delay 3.0  # 8 workers with 3s domain delay
-  python -m crawler.main --multiprocessing --urls-per-batch 20  # Larger batches per worker
-        """
-    )
-    parser.add_argument(
-        '--seeds', 
-        nargs='+', 
-        help='Seed URLs to start crawling from'
-    )
-    
-    parser.add_argument(
-        '--max-pages', 
-        type=int, 
-        default=100,
-        help='Maximum pages to process per batch'
-    )
-    
-    parser.add_argument(
-        '--delay', 
-        type=int, 
-        default=100,
-        help='Delay between batches in milliseconds'
-    )
-    
-    parser.add_argument(
-        '--timeout', 
-        type=int, 
-        default=5,
-        help='Request timeout in seconds'
-    )
-    parser.add_argument(
-        '--proxy', 
-        type=str,
-        help='Proxy URL (e.g., socks5://user:pass@host:port or http://user:pass@host:port)'
-    )
-    
-    parser.add_argument(
-        '--proxy-timeout', 
-        type=int, 
-        default=30,
-        help='Proxy timeout in seconds'
-    )
-    parser.add_argument(
-        '--multiprocessing', 
-        action='store_true',
-        help='Enable multiprocessing for faster crawling'
-    )
-    
-    parser.add_argument(
-        '--max-workers', 
-        type=int, 
-        default=4,
-        help='Maximum number of worker processes'
-    )
-    
-    parser.add_argument(
-        '--urls-per-batch', 
-        type=int, 
-        default=10,
-        help='URLs per worker batch'
-    )
-    
-    parser.add_argument(
-        '--domain-delay', 
-        type=float, 
-        default=5.0,
-        help='Delay between processing URLs from same domain in seconds'
-    )
-    parser.add_argument(
-        '--db-path', 
-        default='crawler.db',
-        help='Database file path (default: crawler.db)'
-    )
-    
-    parser.add_argument(
-        '--csv-output', 
-        default='crawled_urls.csv',
-        help='CSV output file path (default: crawled_urls.csv)'
-    )
-    
-    parser.add_argument(
-        '--no-csv', 
-        action='store_true',
-        help='Disable CSV export'
-    )
-    
-    parser.add_argument(
-        '--fresh-start', 
-        action='store_true',
-        help='Start fresh, ignoring any previous crawling state'
-    )
-    
-    parser.add_argument(
-        '--clear-state', 
-        action='store_true',
-        help='Clear previous crawling state and exit'
-    )
-    parser.add_argument(
-        '--load-state', 
-        action='store_true',
-        help=argparse.SUPPRESS
-    )
-    parser.add_argument(
-        '--utema-beta', 
-        type=float, 
-        default=0.2,
-        help='UTEMA beta parameter for exponential smoothing'
-    )
-    
-    return parser.parse_args()
+# in order to be able to raise customed- error- messages we use this class
+class Error(Exception):
+    pass
 
 
-def create_config(args: argparse.Namespace) -> CrawlerConfig:
-    """Create crawler configuration from arguments."""
-    return CrawlerConfig(
-        timeout=args.timeout,
-        db_path=args.db_path,
-        max_pages_per_batch=args.max_pages,
-        delay_between_batches=args.delay,
-        enable_multiprocessing=args.multiprocessing,
-        max_workers=args.max_workers,
-        urls_per_worker_batch=args.urls_per_batch,
-        domain_rotation_delay=args.domain_delay,
-        utema_beta=args.utema_beta,
-        csv_export_enabled=not args.no_csv,
-        csv_filename=args.csv_output,
-        use_proxy=bool(args.proxy),
-        proxy_url=args.proxy,
-        proxy_timeout=args.proxy_timeout
-    )
 
 
-def main():
-    """Main entry point for the crawler CLI."""
-    args = parse_arguments()
-    config = create_config(args)
-    print("Initializing Tübingen Crawler...")
-    crawler = TuebingenCrawler(config)
-    try:
-        # Handle state management
-        if args.clear_state:
-            crawler.clear_state()
-            print("Cleared previous crawling state.")
-            return
-        
-        # Check if we should load previous state
-        should_load_state = not args.fresh_start  # Load by default unless fresh start
-        
-        if should_load_state:
-            # Check if there's existing state to load
-            try:
-                print("Checking for previous crawling state...")
-                frontier_stats = crawler.frontier.get_statistics()
+
+
+# just needed to manage the interactions between the the main_thread running the crawler and the input_thread running
+# the inputReaction. The running- field acts as a switch in this, meaning once it is set to false, inputReaction as
+# well as the crawler break out of their respective while- loops
+stopEvent = threading.Event()
+
+
+# this only is there for capturing the input- command "stop", which can be entered after "Wait for input..." is displayed.
+# if "stop" is entered then into the terminal and enter is hit, the crawler will stop its crawling process and store the caches,
+# including frontierManagement.frontier and frontierDict and then the program will end. One can see, that the input worked, if "shut- down in progress"
+# is being displayed in the terminal
+def inputReaction():
+    '''if "stop" is entered, this will start the program- shutdown'''
+    while not stopEvent.is_set():
+        print("Waiting for input...")
+        cmd = input()
+        print("[Received input:", cmd)
+        if cmd == "stop":
+            print("[shut- down in progress")
+            # sets the stop- event in order to break this while- loop as well as the while- loop
+            # in the crawler- function
+            stopEvent.set()
+            running = False
+            print("the crawler now stores the frontier, load the caches into the databases and won't read from the frontier any more. Furthermore, after this is done, the crawler function call will end")
+    
+    
+    
+    
+    
+
+    
+# input:
+#        - a list of urls whit which are used to initalise the frontierManagement.frontier
+# 
+# What this function does:
+ # this is the heart of our crawler, the crawler- function. After loading the stored data (frontierManagement.frontier, frontierDict etc.)
+ # and initialising the frontierManagement.frontier with the seed, it manages the crawling- process by basically executing a
+ # while- loop which calls databaseManagement.storeCache in order to 
+ # check if the cachedUrls dictionary has 1000 entries, and if so it is being stored and then the cachedUrls dictionary is emptied,
+ # after that frontierManagement.manageFrontierRead iis being called. This loop runs until either the stopEvent is set,
+ # or the frontierManagement.frontier is empty.
+ # If this is the case it stores the cachedUrls, the frontierManagement.frontier, the frontierDict and additional information in the other caches into storage
+def crawler(lst):#inputThread):
+    '''manages all of the crawling- process, including loading data into the caches in the beginning and storage'''
+    # IMPORTANT: Activate this in order to load the earlier frontierManagement.frontier from the database
+    print("Input not yet available, please wait!")
+           
+    (frontierManagement.frontier, frontierManagement.frontierDict, frontierManagement.domainDelaysFrontier,
+    frontierManagement.disallowedURLCache, frontierManagement.disallowedDomainsCache, statusCodeManagement.responseHttpErrorTracker) = load()
+    frontierInit(lst)
+    counter = 0
+    # just used for a nice print after the while- loop ends
+    numberOfStoredUrlsAtStart = getNumberOfUrlsStored()
+    # starts the inputReaction- thread
+    threading.Thread(target=inputReaction, daemon=True).start()
+    
+    l = len(frontierManagement.frontier)
+    timeStart = time.time()
+    
+    while l !=0 and not stopEvent.is_set():
+        if frontierManagement.frontier.peekitem()[1] < time.time():
+        # IMPORTANT: Want to store the cachedURLs into the dabase, after a certain amount of entries are reached
+        # (currently 1000)
+            storeCache(frontierManagement.cachedUrls)
+            lastCachedUrl = manageFrontierRead()
+            counter +=1
+            l = len(frontierManagement.frontier) 
                 
-                # Try to load state - if there's meaningful state, it will load
-                crawler.load_previous_state()
-                
-                # Check if we actually loaded anything
-                new_frontier_stats = crawler.frontier.get_statistics()
-                if new_frontier_stats['frontier_size'] > 0:
-                    print(f"[!] Loaded previous state: {new_frontier_stats['frontier_size']} URLs in frontier")
-                    print(f"   Previously visited: {new_frontier_stats['visited_count']} URLs")
-                    print("   Resuming crawling from where you left off...")
-                else:
-                    print("[!]  No previous state found - starting fresh")
-                    
-            except Exception as e:
-                print(f"[!] Could not load previous state: {e}")
-                print("   Starting fresh...")
-        else:
-            print("[!] Starting fresh (ignoring any previous state)")
+        if l == 0 or stopEvent.is_set():
+            print(f"last storedUrl: {lastCachedUrl}")
+            break
+        if len(frontierManagement.frontier)!= len(frontierManagement.frontierDict):
+            print(f"urls only contained in frontierDict, but not infrontier: {[a for a in frontierManagement.frontierDict if a not in frontierManagement.frontier]}")
+            raise Error("the frontier does not have the same lengt as the frontierDict!")
         
-        # Determine seed URLs
-        seed_urls = args.seeds if args.seeds else None
-        
-        # Only add seed URLs if we're starting fresh or have no existing frontier
-        frontier_size = crawler.frontier.get_statistics()['frontier_size']
-        if frontier_size == 0 and seed_urls is None:
-            print("   Using default Tübingen seed URLs")
-        elif frontier_size == 0 and seed_urls:
-            print(f"   Using {len(seed_urls)} custom seed URLs")
-        elif frontier_size > 0:
-            seed_urls = []
-            print("   Continuing with existing frontier URLs")
-        print("\nCrawler Configuration:")
-        print(f"  Database: {config.db_path}")
-        print(f"  Max pages per batch: {config.max_pages_per_batch}")
-        print(f"  Request timeout: {config.timeout}s")
-        print(f"  Delay between batches: {config.delay_between_batches}ms")
-        print(f"  CSV export: {'enabled' if config.csv_export_enabled else 'disabled'}")
-        if config.csv_export_enabled:
-            print(f"  CSV file: {config.csv_filename}")
-        print(f"  UTEMA beta: {config.utema_beta}")
-        
-        print("\nStarting crawler...")
-        print("Interactive commands: 'q' to quit, 's' for stats, 'h' for help\n")
-        
-        # Start crawling
-        crawler.start(seed_urls)
-        
-    except KeyboardInterrupt:
-        print("\nCrawler interrupted by user")
-    except Exception as e:
-        print(f"Error: {e}")
-        sys.exit(1)
-    finally:
-        if hasattr(crawler, 'is_running') and crawler.is_running:
-            crawler.stop()
+    
+        if counter % 10 == 0:
+            counter = 0
+            printInfo(timeStart,numberOfStoredUrlsAtStart)
+
+    # sets the stop -event in order to close the inputReaction thread by breaking the while- loop there as well        
+    stopEvent.set()  
+    
+    printInfo(timeStart,numberOfStoredUrlsAtStart)
 
 
-if __name__ == '__main__':
-    main() 
+    store(frontierManagement.frontier, frontierManagement.frontierDict, frontierManagement.domainDelaysFrontier, frontierManagement.disallowedURLCache, 
+          frontierManagement.disallowedDomainsCache, frontierManagement.cachedUrls, helpers.strangeUrls,
+         statusCodeManagement.responseHttpErrorTracker)
+    
+# this calls the crawler, and runs it such that frontierManagement.frontierInit receives the list lst in order to initialise the frontier with
+# the urls in lst. After the crawler is run for completion sake, it closes the connection to the CrawlerDB.duckdb database that was
+#  opened in databaseManagement.py
+def runCrawler(lst):
+    '''calls the crawler, and ensures it only does so on the main thread'''
+    if __name__ == "__main__":
+        crawler(lst) #)
+        closeCrawlerDB()
+      
+        
+        
+#%%
+#this was for my own test purposes
+#runCrawler(["rubbish"])
+runCrawler(seed.Seed)
+
+#runCrawler(["https://whatsdavedoing.com"])
+
+#runCrawler(csvToStringList("justCrawling/crawler/seedPages.csv"))
+
+# print( crawlerDB.execute(f"SELECT MAX(linkingDepth) FROM urlsDB ").fetchone())
+#print( crawlerDB.execute(f"SELECT MAX(domainLinkingDepth) FROM urlsDB ").fetchone())
+# print( crawlerDB.execute(f"SELECT MAX(linkingDepth) FROM urlsDB ").fetchone())
+# print(crawlerDB.execute(
+#     "SELECT url, text FROM urlsDB WHERE url = ?",
+#     ("https://tuenews.de/en/latest-news-english/",)
+# ).fetchone())
+# maybe useful for testing the http status_codes later on:
+# https://the-internet.herokuapp.com/status_codes/200
