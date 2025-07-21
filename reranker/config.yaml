@@ -19,14 +19,13 @@ file_processing:
 
 # Database Configuration
 database:
-  data_path: "crawler_new.db" #"crawlerDb_sbert.duckdb"
-  # JSON file should contain list of dicts with fields: doc_id, sentence, title, url, text, similarity
+  data_path: "crawlerDB.db" # Path to the DuckDB database
 
 # Similarity Calculation
 similarity:
   metric: "cosine"  # Similarity metric (cosine, euclidean, etc.)
   batch_size: 32
-  smoothing: 0.15 # Smoothing factor for new similarity calculation (0.0 means take only new similarity)
+  smoothing: 0.15 # Smoothing factor for new similarity calculation (0.0 means take only similarity, 1.0 means take only BM25 score)
   diversification: True  # Whether to apply domain diversification to the results
   top_k: 100  # Number of top results to return after reranking
 

@@ -1,6 +1,6 @@
 EMBEDDING_MODEL = "as-bessonov/reranker_searchengines_cos2"# Default embedding model, self trained
 EMBEDDING_DIMENSION = 768  # Dimension of the embeddings
-DB_PATH = "crawler_new.db"   # Path to the DuckDB database
+DB_PATH = "crawlerDB.db"   # Path to the DuckDB database
 DB_TABLE = "urlsDB"  # Table name in the DuckDB database
 
 DEFAULT_DB_FETCH_BATCH_SIZE_FOR_BM25 = 5000  # Default batch size for fetching documents for BM25

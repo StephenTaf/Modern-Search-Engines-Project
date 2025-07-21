@@ -11,9 +11,8 @@ This project is our coursework submission for the Modern Search Engines course a
 
 - **Web Crawling**: Discovers and crawls English content about Tübingen starting from manually curated seed
 - **Lexical Search**: Uses BM25 scores to quickly filter the most relevant documents
-- **Semantic Search**: Reranks the results from BM25 retrieval with nural embeddings for better search ranking
+- **Semantic Search**: Reranks the results from BM25 retrieval with neural embeddings for better search ranking
 - **Interactive Visualization**: D3.js bubble interface for exploring search results
-- **Data Processing Pipeline**: Handles duplicate detection, language filtering, and content preprocessing
 - **Search Overview**: Uses an LLM to generate a structures response based on top results
 
 ## How It Works
@@ -106,7 +105,7 @@ Modern-Search-Engines-Project/
 ### Prerequisites
 
 **Required Dataset**
-You need a crawled dataset stored in a DuckDB file named `crawlerDb_sbert.duckdb` (default). This file should contain a `urlsDB` table with at least the following fields:
+You need a crawled dataset stored in a DuckDB file named `crawlerDB.db` (default). This file should contain a `urlsDB` table with at least the following fields:
 - `id` - Unique document identifier
 - `url` - Source URL of the document
 - `title` - Document title
@@ -281,16 +280,15 @@ LLM_MAX_WINDOWS = 10                        # Maximum content windows to pass to
 
 ### Hybrid Search & Reranking
 - **Initial Retrieval**: BM25 lexical search for fast keyword-based document retrieval
-- **Embeddings**: 768-dimensional vectors using Sentence-T5-base model, stored in DuckDB
+- **Embeddings**: 768-dimensional vectors using self trained model, stored in DuckDB
 - **Similarity**: Cosine similarity for semantic matching between query and document chunks
 - **Aggregation**: Max-pooling of chunk scores by document
 - **Reranking**: Uses locally stored embeddings from indexing process for semantic reranking
 - **Storage**: DuckDB with efficient vector operations for fast retrieval
 
 ### Performance
-- **Search Speed**: < 1min for typical queries
-- **Index Size**: TBD 
-- **Memory Usage**: TBD
+- **Search Speed**: < 30 seconds for typical queries
+- **Index Size**: ~7GB (incl. vector embeddings) 
 - **Scalability**: Tested with 100K+ documents, can handle much more
 
 ## Architecture Components
@@ -299,13 +297,12 @@ LLM_MAX_WINDOWS = 10                        # Maximum content windows to pass to
 Our search engine implements a two-stage ranking approach:
 
 1. **Initial Retrieval**: Fast BM25 lexical search to retrieve candidate documents
-2. **Neural Reranking**: Semantic analysis using locally stored Sentence-T5 embeddings in DuckDB
+2. **Neural Reranking**: Semantic analysis using locally stored embeddings in DuckDB
 
 ### Reranking Service 
 The reranking service provides significant quality improvements:
 
 - **Local Embeddings**: Uses pre-computed embeddings stored in DuckDB from the indexing process
-- **Sentence-T5 Model**: 768-dimensional embeddings for nuanced semantic understanding
 - **Sliding Window Analysis**: Processes documents in overlapping chunks for comprehensive coverage
 - **FastAPI Service**: Runs as a separate service on port 8000
 
